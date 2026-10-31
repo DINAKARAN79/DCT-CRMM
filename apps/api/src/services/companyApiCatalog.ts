@@ -774,10 +774,6 @@ const built = [
 const topics = built.map((entry) => entry.topic);
 const checks = built.flatMap((entry) => entry.check ? [entry.check] : []);
 
-function baseUrl() {
-  return process.env.PUBLIC_API_BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
-}
-
 function openApiDocument(catalogTopics: ApiTopicDoc[], url: string) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const topic of catalogTopics) {
@@ -826,8 +822,7 @@ function openApiDocument(catalogTopics: ApiTopicDoc[], url: string) {
   };
 }
 
-export function buildCompanyApiCatalog(): ApiCatalog {
-  const url = baseUrl();
+export function buildCompanyApiCatalog(url = ''): ApiCatalog {
   return {
     baseUrl: url,
     topics,

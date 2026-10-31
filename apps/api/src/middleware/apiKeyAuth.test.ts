@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const database = vi.hoisted(() => ({
   apiKeyFindUnique: vi.fn(),
+  apiKeyFindFirst: vi.fn(),
+  apiKeyRequestLogCreate: vi.fn(),
   apiKeyUpdate: vi.fn(),
   tenantFindUnique: vi.fn(),
   userFindUnique: vi.fn(),
@@ -13,14 +15,17 @@ vi.mock('@dct-crm/db', () => ({
   prisma: {
     apiKey: {
       findUnique: database.apiKeyFindUnique,
+      findFirst: database.apiKeyFindFirst,
       update: database.apiKeyUpdate,
     },
+    apiKeyRequestLog: { create: database.apiKeyRequestLogCreate },
     tenant: { findUnique: database.tenantFindUnique },
     user: { findUnique: database.userFindUnique },
   },
 }));
 
-import { authenticate } from './auth';
+import { requireApiKey } from './requireApiKey';
+import type { AuthRequest } from './auth';
 import { hashApiKey, resetApiKeyCache, resetApiKeyRateLimits } from '../services/apiKeys';
 
 const servers: Server[] = [];
@@ -52,6 +57,22 @@ beforeEach(() => {
     revokedAt: null,
     createdById: 'super-a',
   });
+  database.apiKeyFindFirst.mockResolvedValue({
+    id: 'key-1',
+    tenantId: 'tenant-a',
+    name: 'Website',
+    keyPrefix: 'dct_testkey',
+    keyHash: hashApiKey(rawKey),
+    scopes: ['leads:read'],
+    status: 'active',
+    rateLimitPerMinute: 1,
+    ipAllowlist: ['10.0.0.8'],
+    lastUsedAt: null,
+    expiresAt: null,
+    graceUntil: null,
+    revokedAt: null,
+    createdById: 'super-a',
+  });
   database.tenantFindUnique.mockResolvedValue({
     id: 'tenant-a',
     isActive: true,
@@ -60,6 +81,7 @@ beforeEach(() => {
   });
   database.userFindUnique.mockResolvedValue({ id: 'super-a', email: 'super@example.com', isActive: true });
   database.apiKeyUpdate.mockResolvedValue({});
+  database.apiKeyRequestLogCreate.mockResolvedValue({});
 });
 
 afterEach(async () => {
@@ -71,10 +93,11 @@ afterEach(async () => {
 describe('API key authentication', () => {
   it('uses the key company and rejects another tenant, a blocked IP, another endpoint, a missing scope, and the rate limit', async () => {
     const app = express();
-    app.get('/api/leads', authenticate, (req: any, res) => {
-      res.json({ tenantId: req.tenantId, keyId: req.apiKey?.id, super: req.user.isSuperAdmin });
+    app.set('trust proxy', true);
+    app.get('/api/leads', requireApiKey, (req: AuthRequest, res) => {
+      res.json({ tenantId: req.tenantId, keyId: req.apiKey?.id, super: req.user?.isSuperAdmin ?? false });
     });
-    app.get('/api/projects', authenticate, (_req, res) => res.json({ ok: true }));
+    app.get('/api/projects', requireApiKey, (_req, res) => res.json({ ok: true }));
     const port = listen(app);
     const headers = { 'x-api-key': rawKey, 'x-forwarded-for': '10.0.0.8' };
 
@@ -86,7 +109,7 @@ describe('API key authentication', () => {
       headers: { Authorization: `Bearer ${rawKey}`, 'x-forwarded-for': '10.0.0.8' },
     });
     expect(mismatch.status).toBe(403);
-    expect((await mismatch.json()).error).toMatch(/does not match this API key/);
+    expect(await mismatch.json()).toMatchObject({ ok: false, code: 'TENANT_MISMATCH' });
 
     const wrongIp = await fetch(`http://127.0.0.1:${port}/api/leads`, {
       headers: { 'x-api-key': rawKey, 'x-forwarded-for': '10.9.9.9' },
@@ -111,9 +134,9 @@ describe('API key authentication', () => {
       createdById: 'super-a',
     });
     const otherCompany = await fetch(`http://127.0.0.1:${port}/api/leads`, { headers: { 'x-api-key': rawKey } });
-    const otherBody = await otherCompany.json();
+    const otherBody = await otherCompany.json() as { message: string };
     expect(otherCompany.status).toBe(403);
-    expect(otherBody.error).toMatch(/missing the leads:read scope/);
+    expect(otherBody.message).toMatch(/missing the leads:read scope/);
 
     resetApiKeyCache();
     const limited = await fetch(`http://127.0.0.1:${port}/api/leads`, { headers });

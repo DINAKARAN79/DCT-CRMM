@@ -897,10 +897,10 @@ pdf.h1("31. Environment & Configuration")
 pdf.body("Variables (names only) present in root .env, .env.example, apps/api/.env, packages/db/.env:")
 pdf.code(
     "DATABASE_URL\nJWT_SECRET\nJWT_EXPIRES_IN\nCORS_ORIGIN\nPORT\nNODE_ENV\n"
-    "OPENAI_API_KEY\nNODE_API_URL\nNEXT_PUBLIC_API_URL"
+    "OPENAI_API_KEY\nNODE_API_URL\nPUBLIC_API_BASE_URL\nALLOWED_API_HOSTS\nTRUST_PROXY"
 )
 pdf.bullet("apps/api/.env.example missing.")
-pdf.bullet("apps/web has no .env / .env.example (relies on NEXT_PUBLIC_API_URL).")
+pdf.bullet("Customer API links resolve at runtime from PUBLIC_API_BASE_URL or a validated request host.")
 pdf.bullet("TS strict: true on both apps; no extra flags (noUncheckedIndexedAccess off).")
 
 # ============ 32. TESTING ============

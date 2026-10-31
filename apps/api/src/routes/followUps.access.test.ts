@@ -110,7 +110,7 @@ afterEach(() => {
 describe('follow-up access', () => {
   it('returns only the owner rows, and the total uses the same filter', async () => {
     const response = await request('/api/follow-ups?status=SCHEDULED');
-    const body = await response.json();
+    const body = await response.json() as { pagination: { total: number } };
     const where = {
       AND: [
         { tenantId: 'tenant-a', ownerId: 'user-a' },
@@ -163,7 +163,7 @@ describe('follow-up access', () => {
 
   it('returns 404 for a direct link the user does not own', async () => {
     const response = await request('/api/follow-ups/follow-up-b');
-    const body = await response.json();
+    const body = await response.json() as { error: string };
 
     expect(response.status).toBe(404);
     expect(body.error).toBe('Follow-up not found');

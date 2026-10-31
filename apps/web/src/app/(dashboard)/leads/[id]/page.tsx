@@ -1977,16 +1977,6 @@ export default function LeadDetailPage() {
                       <img src="/phone-call.svg" alt="" className="h-8 w-8" />
                     </Button>
                   )}
-                  {(hasPermission("Activity", "create") || hasEffectivePermission("ACTIVITY_CREATE") || isAdmin || isSuperAdmin) && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 border-[#5b9fbe] px-2.5 text-[10px] font-medium text-[#397b9b] hover:bg-sky-50 hover:text-blue-800"
-                      onClick={openCallDialog}
-                    >
-                      Log call
-                    </Button>
-                  )}
                   {scheduleSiteVisitAction && (
                     <Button
                       variant="outline"

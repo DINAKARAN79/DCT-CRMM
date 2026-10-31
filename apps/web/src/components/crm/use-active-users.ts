@@ -5,6 +5,40 @@ import { getSessionToken, presenceApi } from "@/lib/api";
 
 export type PresenceConnection = "live" | "reconnecting";
 
+type SessionRow = {
+  id: string;
+  browser: string | null;
+  os: string | null;
+  ipAddress: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+};
+
+type ActiveUser = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  profile: { name: string } | null;
+  role: { name: string } | null;
+  sessionCount: number;
+  browser: string | null;
+  os: string | null;
+  ipAddress: string | null;
+  loggedInSince: string | null;
+  lastActivity: string | null;
+  isLoggedIn: boolean;
+  sessions: SessionRow[];
+};
+
+export type ActiveUsersPayload = {
+  onlineCount: number;
+  totalUsers: number;
+  loggedOut: number;
+  byProfile: Array<{ profile: string; count: number }>;
+  users: ActiveUser[];
+  detailsHidden?: boolean;
+};
+
 type ActiveUsersParams = {
   search?: string;
   includeOffline?: boolean;
@@ -21,7 +55,7 @@ function streamUrl() {
 }
 
 export function useActiveUsers(params: ActiveUsersParams = {}) {
-  const [payload, setPayload] = React.useState<any>(null);
+  const [payload, setPayload] = React.useState<ActiveUsersPayload | null>(null);
   const [status, setStatus] = React.useState<PresenceConnection>("reconnecting");
   const paramsRef = React.useRef(params);
   paramsRef.current = params;
@@ -65,7 +99,7 @@ export function useActiveUsers(params: ActiveUsersParams = {}) {
         try {
           const event = JSON.parse(line.slice(5).trim());
           if (event?.type !== "presence") continue;
-          setPayload((current: any) => current ? {
+          setPayload((current) => current ? {
             ...current,
             onlineCount: event.onlineCount,
             totalUsers: event.totalUsers,

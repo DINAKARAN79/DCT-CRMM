@@ -110,6 +110,7 @@ function DashboardShell({
   const standaloneReport =
     pathname.startsWith("/reports/") && pathname !== "/reports/new";
   const embedded = searchParams.get("embed") === "1";
+  const companiesApiConsole = pathname === "/admin/companies" && searchParams.get("view") === "api";
 
   if (embedded) {
     return (
@@ -144,20 +145,22 @@ function DashboardShell({
   return (
     <AuthProvider>
       <BreadcrumbLabels>
-      <div className="min-h-screen min-w-0 max-w-full bg-background">
+      <div className={`${companiesApiConsole ? "min-h-screen lg:h-dvh lg:overflow-hidden" : "min-h-screen"} min-w-0 max-w-full bg-background`}>
         <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-        <div className="min-w-0 max-w-full overflow-x-clip lg:pl-14">
+        <div className={`${companiesApiConsole ? "lg:flex lg:h-full lg:min-h-0 lg:flex-col" : ""} min-w-0 max-w-full overflow-x-clip lg:pl-14`}>
           <React.Suspense fallback={<div className="h-14" aria-hidden="true" />}>
             <Header onMenuClick={() => setSidebarOpen(true)} />
           </React.Suspense>
-          <main className="dashboard-page-content min-h-[calc(100dvh-3.5rem)] min-w-0 max-w-full overflow-x-clip p-4">
+          <main className={`dashboard-page-content ${companiesApiConsole ? "lg:flex lg:h-[calc(100dvh-4rem)] lg:min-h-0 lg:flex-col lg:overflow-hidden" : "min-h-[calc(100dvh-3.5rem)]"} min-w-0 max-w-full overflow-x-clip p-4`}>
             <ImpersonationBanner />
             {!hideBreadcrumb && <Breadcrumb className="mb-3" />}
             <UserImpersonationBanner />
             <PhoneRequiredBanner />
             <DashboardAccessGuard>
-              <React.Suspense fallback={<div className="min-h-[40vh]" aria-hidden="true" />}>
-                {children}
+              <React.Suspense fallback={<div className={companiesApiConsole ? "lg:min-h-0 lg:flex-1" : "min-h-[40vh]"} aria-hidden="true" />}>
+                <div className={companiesApiConsole ? "lg:min-h-0 lg:flex-1" : ""}>
+                  {children}
+                </div>
               </React.Suspense>
             </DashboardAccessGuard>
           </main>

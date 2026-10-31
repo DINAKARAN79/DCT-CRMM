@@ -31,10 +31,11 @@ vi.mock('@dct-crm/db', () => ({
 }));
 
 import { EXTERNAL_API_MOUNTS, requireApiKey } from './requireApiKey';
-import { generateApiKeySecret, hashApiKey, resetApiKeyCache, resetApiKeyRateLimits } from '../services/apiKeys';
+import type { AuthRequest } from './auth';
+import { generateApiKeySecret, hashApiKey, isValidCustomApiKeyHeaderName, resetApiKeyCache, resetApiKeyRateLimits } from '../services/apiKeys';
 
 const servers: Server[] = [];
-const routes = EXTERNAL_API_MOUNTS;
+const routes = EXTERNAL_API_MOUNTS.map(({ path }) => path);
 
 function listen(app: express.Express) {
   const server = app.listen(0);
@@ -108,6 +109,9 @@ describe('mandatory company API keys', () => {
       const missing = await fetch(`http://127.0.0.1:${port}${path}`);
       expect(missing.status).toBe(401);
       expect(await missing.json()).toMatchObject({ ok: false, code: 'API_KEY_MISSING' });
+      expect(database.requestLogCreate).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ apiKeyId: null, tenantId: null, method: 'GET', status: 401 }),
+      }));
 
       const wrong = await fetch(`http://127.0.0.1:${port}${path}`, {
         headers: { Authorization: `Bearer ${generateApiKeySecret().apiKey}` },
@@ -134,15 +138,119 @@ describe('mandatory company API keys', () => {
     }
   });
 
+  it('requires a valid key for every method on each registered object route', async () => {
+    const secret = generateApiKeySecret();
+    const unknownSecret = generateApiKeySecret();
+    const scopes = EXTERNAL_API_MOUNTS.flatMap(({ resource }) => [
+      `${resource}:read`,
+      `${resource}:write`,
+      `${resource}:delete`,
+    ]);
+    const app = express();
+    for (const { path } of EXTERNAL_API_MOUNTS) {
+      app.use(path, requireApiKey, (_req, res) => res.json({ ok: true }));
+    }
+    const port = listen(app);
+
+    for (const { path } of EXTERNAL_API_MOUNTS) {
+      for (const method of ['GET', 'POST', 'PUT', 'DELETE'] as const) {
+        const missing = await fetch(`http://127.0.0.1:${port}${path}`, { method });
+        expect(missing.status).toBe(401);
+
+        database.apiKeyFindFirst.mockResolvedValue(null);
+        const wrong = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method,
+          headers: { 'x-api-key': unknownSecret.apiKey },
+        });
+        expect(wrong.status).toBe(401);
+        expect(await wrong.json()).toMatchObject({ ok: false, code: 'API_KEY_INVALID' });
+
+        resetApiKeyCache();
+        database.apiKeyFindFirst.mockResolvedValue(keyRecord(secret, { status: 'revoked', revokedAt: new Date() }));
+        const revoked = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method,
+          headers: { 'x-api-key': secret.apiKey },
+        });
+        expect(revoked.status).toBe(401);
+        expect(await revoked.json()).toMatchObject({ ok: false, code: 'API_KEY_REVOKED' });
+
+        resetApiKeyCache();
+        database.apiKeyFindFirst.mockResolvedValue(keyRecord(secret, { expiresAt: new Date(Date.now() - 1000) }));
+        const expired = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method,
+          headers: { 'x-api-key': secret.apiKey },
+        });
+        expect(expired.status).toBe(401);
+        expect(await expired.json()).toMatchObject({ ok: false, code: 'API_KEY_EXPIRED' });
+
+        resetApiKeyCache();
+        database.apiKeyFindFirst.mockResolvedValue(keyRecord(secret, { scopes }));
+        const authorized = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method,
+          headers: { 'x-api-key': secret.apiKey },
+        });
+        expect(authorized.status).toBe(200);
+      }
+    }
+  });
+
   it('takes the company from the key and rejects a mismatched tenantId', async () => {
     const secret = generateApiKeySecret();
     let calls = 0;
     const app = express();
     app.use(express.json());
-    app.use('/api/leads', requireApiKey, (req: any, res) => {
+    app.use('/api/leads', requireApiKey, (req: AuthRequest, res) => {
       calls += 1;
       res.json({ tenantId: req.tenantId });
     });
+
+    {
+      const secret = generateApiKeySecret();
+      const app = express();
+      app.get('/api/leads', requireApiKey, (_req, res) => res.json({ ok: true }));
+      const port = listen(app);
+      database.apiKeyFindFirst.mockResolvedValue(keyRecord(secret, {
+        customHeaderName: 'X-Company-Token',
+        scopes: ['leads:read'],
+      }));
+
+      const customHeader = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        headers: { 'X-Company-Token': secret.apiKey },
+      });
+      expect(customHeader.status).toBe(200);
+
+      resetApiKeyCache();
+      database.apiKeyFindFirst.mockResolvedValue(keyRecord(secret, {
+        customHeaderName: 'X-Company-Token',
+        acceptOnlyCustomHeader: true,
+        scopes: ['leads:read'],
+      }));
+      const standardHeader = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        headers: { 'x-api-key': secret.apiKey },
+      });
+      expect(standardHeader.status).toBe(401);
+      expect(await standardHeader.json()).toMatchObject({ ok: false, code: 'API_KEY_INVALID' });
+
+      const wrongCustomHeader = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        headers: { 'X-Company-Token': 'not-the-company-key' },
+      });
+      expect(wrongCustomHeader.status).toBe(401);
+      expect(await wrongCustomHeader.json()).toMatchObject({ ok: false, code: 'API_KEY_INVALID' });
+
+      const requiredCustomHeader = await fetch(`http://127.0.0.1:${port}/api/leads`, {
+        headers: { 'X-Company-Token': secret.apiKey },
+      });
+      expect(requiredCustomHeader.status).toBe(200);
+    }
+
+    {
+      expect(isValidCustomApiKeyHeaderName('X-Company-Token')).toBe(true);
+      for (const headerName of ['Authorization', 'Host', 'Content-Type', 'Content-Length', 'Cookie', 'Set-Cookie', 'X-Forwarded-Host', 'Proxy-Authorization']) {
+        expect(isValidCustomApiKeyHeaderName(headerName)).toBe(false);
+      }
+      expect(isValidCustomApiKeyHeaderName('1Bad')).toBe(false);
+      expect(isValidCustomApiKeyHeaderName('X')).toBe(false);
+    }
     const port = listen(app);
     database.apiKeyFindFirst.mockResolvedValue(keyRecord(secret, { scopes: ['leads:read', 'leads:write', 'leads:delete'] }));
 
@@ -245,7 +353,7 @@ describe('mandatory company API keys', () => {
 
   it('still accepts a browser JWT on the same route', async () => {
     const app = express();
-    app.get('/api/leads', requireApiKey, (req: any, res) => res.json({ tenantId: req.tenantId, apiKey: Boolean(req.apiKey) }));
+    app.get('/api/leads', requireApiKey, (req: AuthRequest, res) => res.json({ tenantId: req.tenantId, apiKey: Boolean(req.apiKey) }));
     const port = listen(app);
     const token = jwt.sign({ id: 'user-a', email: 'admin@example.com', tenantId: 'tenant-a', isSuperAdmin: false }, process.env.JWT_SECRET!);
     const response = await fetch(`http://127.0.0.1:${port}/api/leads`, {
@@ -257,12 +365,30 @@ describe('mandatory company API keys', () => {
 
   it('fails the registry check when an external route is mounted without the API key middleware', () => {
     const index = readFileSync(resolve(__dirname, '../index.ts'), 'utf8');
-    for (const path of routes) {
+    for (const { path } of EXTERNAL_API_MOUNTS) {
       expect(index).toContain(`mountExternalApi(app, '${path}'`);
       expect(index).not.toContain(`app.use('${path}'`);
     }
     expect(index).toContain("app.get('/api/health'");
+    expect(index).not.toContain("app.get('/health'");
+    expect(index).not.toContain("app.get('/',");
     expect(index).not.toContain('OPEN_API_DEV_MODE');
+  });
+
+  it('rejects API keys supplied in query parameters or request bodies', async () => {
+    const app = express();
+    app.use(express.json());
+    app.all('/api/leads', requireApiKey, (_req, res) => res.json({ ok: true }));
+    const port = listen(app);
+    for (const url of ['/api/leads?api_key=dct_live_12345678_invalid', '/api/leads?apiKey=secret']) {
+      const response = await fetch(`http://127.0.0.1:${port}${url}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: 'secret' }),
+      });
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ ok: false, code: 'API_KEY_INVALID' });
+    }
   });
 });
 

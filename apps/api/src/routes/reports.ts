@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { prisma, ReportVisibility } from '@dct-crm/db';
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { authorize } from '../middleware/authorization';
@@ -27,7 +28,7 @@ function persistReportConfig(config: unknown, body: Record<string, unknown>) {
   if (Array.isArray(body.columnGroups)) next.columnGroups = body.columnGroups;
   if (body.filterLogic === 'AND' || body.filterLogic === 'OR') next.filterLogic = body.filterLogic;
   if (body.sortOrder === 'asc' || body.sortOrder === 'desc') next.sortOrder = body.sortOrder;
-  return Object.keys(next).length ? next : undefined;
+  return Object.keys(next).length ? next as Prisma.InputJsonValue : undefined;
 }
 
 function presentReport(report: { config: unknown; groupBy: string | null; createdBy: string }, createdByName?: string) {
@@ -396,7 +397,7 @@ router.post('/', authorize('Report', 'create'), async (req: AuthRequest, res: Re
         objectName: data.objectName,
         columns: data.columns,
         config: persistReportConfig(data.config, req.body),
-        filters: data.filters || undefined,
+        filters: data.filters as unknown as Prisma.InputJsonValue | undefined,
         groupBy: data.groupBy,
         sortBy: data.sortBy,
         folderId: data.folderId || null,
@@ -763,7 +764,7 @@ router.put('/:id', authorize('Report', 'edit'), async (req: AuthRequest, res: Re
       data: {
         ...data,
         config: persistReportConfig(data.config !== undefined ? data.config : existing.config, req.body),
-        filters: data.filters || undefined,
+        filters: data.filters as unknown as Prisma.InputJsonValue | undefined,
       },
     });
 

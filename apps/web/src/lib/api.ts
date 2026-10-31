@@ -1093,6 +1093,8 @@ export const companyApi = {
       api.post<ApiResponse>(`/api/admin/companies/${tenantId}/api-key/revoke`),
     updateScopes: (tenantId: string, allowDelete: boolean) =>
       api.patch<ApiResponse>(`/api/admin/companies/${tenantId}/api-key/scopes`, { allowDelete }),
+    updateHeaderSettings: (tenantId: string, customHeaderName: string | null, acceptOnlyCustomHeader: boolean) =>
+      api.patch<ApiResponse>(`/api/admin/companies/${tenantId}/api-key/header-settings`, { customHeaderName, acceptOnlyCustomHeader }),
     setupGet: (tenantId?: string) =>
       api.get<ApiResponse>('/api/setup/api-key', { params: tenantId ? { tenantId } : undefined }),
     setupRevealOnce: (tenantId?: string) =>
@@ -1103,9 +1105,12 @@ export const companyApi = {
       api.post<ApiResponse>('/api/setup/api-key/revoke', {}, { params: tenantId ? { tenantId } : undefined }),
     setupUpdateScopes: (allowDelete: boolean, tenantId?: string) =>
       api.patch<ApiResponse>('/api/setup/api-key/scopes', { allowDelete }, { params: tenantId ? { tenantId } : undefined }),
+    setupUpdateHeaderSettings: (customHeaderName: string | null, acceptOnlyCustomHeader: boolean, tenantId?: string) =>
+      api.patch<ApiResponse>('/api/setup/api-key/header-settings', { customHeaderName, acceptOnlyCustomHeader }, { params: tenantId ? { tenantId } : undefined }),
   },
-  apiCatalog: () => api.get<ApiResponse>('/api/super-admin/api-catalog'),
-  apiBaseUrl: () => api.get<ApiResponse>('/api/super-admin/api-catalog/base-url'),
+  apiCatalog: () => api.get<ApiResponse>('/api/admin/api-reference'),
+  apiBaseUrl: () => api.get<ApiResponse>('/api/admin/api-reference/base-url'),
+  testApiBaseUrl: () => api.get<ApiResponse>('/api/admin/api-reference/base-url/test'),
   telephony: {
     list: (tenantId: string) => api.get<ApiResponse>(`/api/super-admin/companies/${tenantId}/telephony`),
     create: (tenantId: string, data: { name?: string; rateLimitPerMinute?: number; ipAllowlist?: string[] }) =>
@@ -1124,11 +1129,16 @@ export const companyApi = {
     path: string;
     query?: Record<string, string>;
     body?: unknown;
-    apiKey?: string;
+    headerName?: string;
     sandbox?: boolean;
     objectName: string;
     operationId: string;
-  }) => api.post<ApiResponse>('/api/super-admin/api-catalog/try', data),
+  }, apiKey?: string, customHeaderName?: string | null) =>
+    api.post<ApiResponse>('/api/super-admin/api-catalog/try', data, {
+      headers: apiKey
+        ? { [customHeaderName || 'X-API-Key']: apiKey }
+        : undefined,
+    }),
 };
 
 export const projectLayoutsApi = {

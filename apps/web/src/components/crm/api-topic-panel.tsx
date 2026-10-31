@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertCircle, ChevronDown, Copy, Download, KeyRound, Loader2 } from "lucide-react";
+import { AlertCircle, ChevronDown, Copy, Download, ExternalLink, KeyRound, Loader2 } from "lucide-react";
 import { CompanyApiCards } from "@/components/crm/company-api-cards";
 import { companyApi } from "@/lib/api";
 import { companyApiUrl } from "@/lib/company-api-url";
@@ -88,6 +88,12 @@ interface PublicBaseUrl {
   warning: string | null;
 }
 
+interface ConnectivityResult {
+  ok: boolean;
+  status: number | null;
+  reason: string;
+}
+
 interface FieldError {
   field: string;
   message: string;
@@ -139,7 +145,7 @@ function exampleUrl(baseUrl: string, path: string, tenantId?: string, params?: A
   return `${baseUrl}${path.replace(/:([A-Za-z0-9_]+)/g, "cmexample000000000000000001")}`;
 }
 
-function snippet(language: "curl" | "fetch" | "python", method: HttpMethod, url: string, body: unknown | null, secret: string) {
+function legacySnippet(language: "curl" | "fetch" | "python", method: HttpMethod, url: string, body: unknown | null, secret: string) {
   const key = secret || "<key>";
   const payload = body ? pretty(body) : "";
   if (language === "curl") {
@@ -163,6 +169,43 @@ response = requests.${method.toLowerCase()}(
 )`;
 }
 
+function snippet(
+  language: "curl" | "fetch" | "python",
+  method: HttpMethod,
+  url: string,
+  body: unknown | null,
+  secret: string,
+  headerSettings?: { customHeaderName: string | null; acceptOnlyCustomHeader: boolean },
+) {
+  if (!headerSettings) return legacySnippet(language, method, url, body, secret);
+  const key = secret || "<key>";
+  const headers = headerSettings.acceptOnlyCustomHeader && headerSettings.customHeaderName
+    ? { [headerSettings.customHeaderName]: key }
+    : {
+        Authorization: `Bearer ${key}`,
+        ...(headerSettings.customHeaderName ? { [headerSettings.customHeaderName]: key } : {}),
+      };
+  const payload = body ? pretty(body) : "";
+  const requestHeaders = { ...headers, ...(body ? { "Content-Type": "application/json" } : {}) };
+  if (language === "curl") {
+    const lines = [`curl -X ${method} '${url}'`, ...Object.entries(headers).map(([name, value]) => `  -H '${name}: ${value}'`)];
+    if (body) lines.push("  -H 'Content-Type: application/json'", `  -d '${payload}'`);
+    return lines.join(" \\\n");
+  }
+  if (language === "fetch") {
+    return `await fetch('${url}', {
+  method: '${method}',
+  headers: ${JSON.stringify(requestHeaders, null, 2)},
+${body ? `  body: JSON.stringify(${payload}),\n` : ""}});`;
+  }
+  return `import requests
+
+response = requests.${method.toLowerCase()}(
+    '${url}',
+    headers=${JSON.stringify(requestHeaders)}${body ? `,\n    json=${payload}` : ""}
+)`;
+}
+
 export function ApiOperationRow({
   operation,
   objectName,
@@ -173,6 +216,7 @@ export function ApiOperationRow({
   onSecretChange,
   detailsOnly = false,
   tenantId,
+  headerSettings = { customHeaderName: null, acceptOnlyCustomHeader: false },
 }: {
   operation: ApiOperation;
   objectName: string;
@@ -183,12 +227,14 @@ export function ApiOperationRow({
   onSecretChange: (value: string) => void;
   detailsOnly?: boolean;
   tenantId?: string;
+  headerSettings?: { customHeaderName: string | null; acceptOnlyCustomHeader: boolean };
 }) {
   const { toast } = useToast();
   const [payloadMode, setPayloadMode] = React.useState<"required" | "full">("required");
   const [language, setLanguage] = React.useState<"curl" | "fetch" | "python">("curl");
   const [tryBody, setTryBody] = React.useState(operation.body ? pretty(operation.body.requiredExample) : "");
   const [sandbox, setSandbox] = React.useState(operation.method !== "GET");
+  const [tryOpen, setTryOpen] = React.useState(false);
   const [running, setRunning] = React.useState(false);
   const [fieldErrors, setFieldErrors] = React.useState<FieldError[]>([]);
   const [result, setResult] = React.useState<{ status: number; ms: number; body: unknown } | null>(null);
@@ -196,6 +242,18 @@ export function ApiOperationRow({
     ? (payloadMode === "required" ? operation.body.requiredExample : operation.body.fullExample)
     : null;
   const url = exampleUrl(baseUrl, operation.path, tenantId, operation.params);
+  const headerExample = [
+    "Authorization: Bearer <API key>",
+    "X-API-Key: <API key>",
+    ...(operation.body ? ["Content-Type: application/json"] : []),
+  ].join("\n");
+  const configuredHeaderExample = headerSettings
+    ? [
+        ...(!headerSettings.acceptOnlyCustomHeader ? ["Authorization: Bearer <API key>", "X-API-Key: <API key>"] : []),
+        ...(headerSettings.customHeaderName ? [`${headerSettings.customHeaderName}: <API key>`] : []),
+        ...(operation.body ? ["Content-Type: application/json"] : []),
+      ].join("\n")
+    : headerExample;
   const errorFields = new Set(fieldErrors.map((error) => error.field));
 
   React.useEffect(() => {
@@ -250,11 +308,11 @@ export function ApiOperationRow({
         method: operation.method,
         path: operation.path.replace(/:([A-Za-z0-9_]+)/g, "cmexample000000000000000001"),
         body: parsedBody,
-        apiKey: secret || undefined,
+        headerName: headerSettings.customHeaderName || "X-API-Key",
         sandbox,
         objectName,
         operationId: operation.id,
-      });
+      }, secret || undefined, headerSettings.customHeaderName);
       const data = response.data?.data || {};
       if (data.fieldErrors?.length && data.status === 400) {
         setFieldErrors(data.fieldErrors);
@@ -290,19 +348,28 @@ export function ApiOperationRow({
       {showDetails && (
         <div className={detailsOnly ? "space-y-4 text-sm" : "space-y-4 border-t px-3 py-3 text-sm"}>
           <section>
-            <h4 className="mb-1 font-medium">Description</h4>
-            <p className="text-muted-foreground">{operation.description}</p>
-            <p className="mt-1 text-muted-foreground">{operation.authNote}</p>
-          </section>
-          <section>
             <div className="mb-1 flex items-center justify-between gap-2">
-              <h4 className="font-medium">URL</h4>
-              <Button type="button" size="sm" variant="outline" onClick={() => void copyText(url)}>
-                <Copy className="h-3.5 w-3.5" /> Copy
-              </Button>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold ${methodClass[operation.method]}`}>{operation.method}</span>
+                <code className="min-w-0 overflow-x-auto whitespace-nowrap rounded bg-muted px-2 py-1 text-xs">{url}</code>
+              </div>
+              <div className="flex shrink-0 gap-1">
+                {operation.method === "GET" ? (
+                  <a href={url} target="_blank" rel="noreferrer" aria-label={`Open ${operation.summary}`} className="inline-flex h-8 w-8 items-center justify-center rounded-md border">
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                ) : null}
+                <Button type="button" size="sm" variant="outline" onClick={() => void copyText(url)}>
+                  <Copy className="h-3.5 w-3.5" /> Copy
+                </Button>
+              </div>
             </div>
-            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 text-xs">{url}</code>
           </section>
+          <section className="flex flex-wrap items-center gap-2">
+            <p className="text-sm text-muted-foreground">{operation.description}</p>
+            {operation.scope ? <Badge variant="outline" className="shrink-0 font-normal">{operation.scope}</Badge> : null}
+          </section>
+          <p className="text-xs text-muted-foreground">{operation.authNote}</p>
           {!!operation.params.length && (
             <section>
               <h4 className="mb-1 font-medium">Parameters</h4>
@@ -310,8 +377,13 @@ export function ApiOperationRow({
             </section>
           )}
           <section>
-            <h4 className="mb-1 font-medium">Headers</h4>
-            <ParamTable params={operation.headers} />
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <h4 className="font-medium">Headers</h4>
+              <Button type="button" size="sm" variant="outline" onClick={() => void copyText(configuredHeaderExample)}>
+                <Copy className="h-3.5 w-3.5" /> Copy
+              </Button>
+            </div>
+            <pre className="overflow-x-auto rounded bg-muted p-2 text-xs">{configuredHeaderExample}</pre>
           </section>
           {operation.body && (
             <section className="space-y-2">
@@ -384,32 +456,47 @@ export function ApiOperationRow({
               </TabsList>
               <TabsContent value={language}>
                 <div className="mb-2">
-                  <Button type="button" size="sm" variant="outline" onClick={() => void copyText(snippet(language, operation.method, url, activePayload, secret))}>
+                  <Button type="button" size="sm" variant="outline" onClick={() => void copyText(snippet(language, operation.method, url, activePayload, secret, headerSettings))}>
                     <Copy className="h-3.5 w-3.5" /> Copy
                   </Button>
                 </div>
-                <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{snippet(language, operation.method, url, activePayload, secret)}</pre>
+                <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{snippet(language, operation.method, url, activePayload, secret, headerSettings)}</pre>
               </TabsContent>
             </Tabs>
           </section>
           <section>
-            <h4 className="mb-1 font-medium">Example response</h4>
+            <h4 className="mb-1 font-medium">Example responses</h4>
             {!!operation.readOnlyResponseFields.length && (
               <p className="mb-1 text-xs text-muted-foreground">Read-only in the response: {operation.readOnlyResponseFields.join(", ")}.</p>
             )}
-            <p className="mb-1 text-xs text-muted-foreground">{operation.successStatus}</p>
-            <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{pretty(operation.successExample)}</pre>
-            <div className="mt-2 space-y-2">
-              {operation.errors.map((error) => (
-                <div key={error.status}>
-                  <p className="mb-1 text-xs text-muted-foreground">{error.status}</p>
-                  <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{pretty(error.body)}</pre>
+            <Tabs defaultValue="success">
+              <TabsList>
+                <TabsTrigger value="success">Success ({operation.successStatus})</TabsTrigger>
+                <TabsTrigger value="errors">Errors</TabsTrigger>
+              </TabsList>
+              <TabsContent value="success">
+                <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{pretty(operation.successExample)}</pre>
+              </TabsContent>
+              <TabsContent value="errors">
+                <div className="space-y-2">
+                  {operation.errors.map((error) => (
+                    <div key={error.status}>
+                      <p className="mb-1 text-xs text-muted-foreground">{error.status}</p>
+                      <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{pretty(error.body)}</pre>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </TabsContent>
+            </Tabs>
           </section>
           <section className="space-y-2">
-            <h4 className="font-medium">Try it</h4>
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="font-medium">Try it</h4>
+              <Button type="button" size="sm" variant="outline" aria-expanded={tryOpen} onClick={() => setTryOpen((open) => !open)}>
+                {tryOpen ? "Close tester" : "Open tester"}
+              </Button>
+            </div>
+            {tryOpen ? <>
             <div className="flex flex-wrap items-end gap-2">
               <label className="min-w-[220px] flex-1 text-xs text-muted-foreground">
                 Secret
@@ -452,6 +539,7 @@ export function ApiOperationRow({
                 <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{pretty(result.body)}</pre>
               </div>
             )}
+            </> : null}
           </section>
         </div>
       )}
@@ -494,12 +582,14 @@ export function ApiTopicPanel({
   baseUrl,
   secret,
   onSecretChange,
+  headerSettings,
 }: {
   topic: ApiTopic | null;
   registry: RegistryObject;
   baseUrl: string;
   secret: string;
   onSecretChange: (value: string) => void;
+  headerSettings?: { customHeaderName: string | null; acceptOnlyCustomHeader: boolean };
 }) {
   const { toast } = useToast();
   const router = useRouter();
@@ -631,6 +721,7 @@ export function ApiTopicPanel({
               detailsOnly
               secret={secret}
               onSecretChange={onSecretChange}
+              headerSettings={headerSettings}
             />
           </div>
         </div>
@@ -644,8 +735,19 @@ export function CompanyApiReference({ tenantId, companyName, companyCode }: { te
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const [secret, setSecret] = React.useState("");
-  const [detail, setDetail] = React.useState<{ topic: ApiTopic; operation: ApiOperation } | null>(null);
+  const [headerSettings, setHeaderSettings] = React.useState({ customHeaderName: null as string | null, acceptOnlyCustomHeader: false });
+  const [allowDelete, setAllowDelete] = React.useState(false);
   const [base, setBase] = React.useState<PublicBaseUrl>({ baseUrl: "", source: "rejected", privateHost: false, warning: null });
+  const [testingConnectivity, setTestingConnectivity] = React.useState(false);
+  const [connectivity, setConnectivity] = React.useState<ConnectivityResult | null>(null);
+  const handleDeleteScopeChange = React.useCallback((enabled: boolean) => setAllowDelete(enabled), []);
+  const handleHeaderSettingsChange = React.useCallback((customHeaderName: string | null, acceptOnlyCustomHeader: boolean) => {
+    setHeaderSettings({ customHeaderName, acceptOnlyCustomHeader });
+  }, []);
+  const isPublicPage = typeof window !== "undefined"
+    && window.location.hostname.includes(".")
+    && !window.location.hostname.endsWith(".local")
+    && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(window.location.hostname);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -658,6 +760,7 @@ export function CompanyApiReference({ tenantId, companyName, companyCode }: { te
       if (!catalogResponse.data?.success) throw new Error(catalogResponse.data?.error || "Failed to load the API catalog");
       setCatalog(catalogResponse.data.data as ApiCatalog);
       if (baseResponse.data?.success && baseResponse.data.data) setBase(baseResponse.data.data as PublicBaseUrl);
+      else throw new Error(baseResponse.data?.error || "Failed to resolve the public API base URL");
     } catch (loadError: unknown) {
       const message = loadError && typeof loadError === "object" && "response" in loadError
         ? (loadError as { response?: { data?: { error?: string } }; message?: string }).response?.data?.error
@@ -670,12 +773,30 @@ export function CompanyApiReference({ tenantId, companyName, companyCode }: { te
   }, []);
 
   React.useEffect(() => { void load(); }, [load]);
-  React.useEffect(() => { setDetail(null); }, [tenantId]);
-
+  const testConnectivity = async () => {
+    setTestingConnectivity(true);
+    setConnectivity(null);
+    try {
+      const response = await companyApi.testApiBaseUrl();
+      if (!response.data?.success || !response.data.data) {
+        throw new Error(response.data?.error || "Connectivity test failed");
+      }
+      setConnectivity(response.data.data as ConnectivityResult);
+    } catch (testError: unknown) {
+      const message = testError && typeof testError === "object" && "response" in testError
+        ? (testError as { response?: { data?: { data?: ConnectivityResult; error?: string } }; message?: string }).response?.data?.data?.reason
+          || (testError as { response?: { data?: { error?: string } }; message?: string }).response?.data?.error
+          || (testError as { message?: string }).message
+        : "Connectivity test failed";
+      setConnectivity({ ok: false, status: null, reason: message || "Connectivity test failed" });
+    } finally {
+      setTestingConnectivity(false);
+    }
+  };
   const downloadSpec = () => {
     if (!catalog) return;
     const spec = structuredClone(catalog.openapi) as { servers?: Array<{ url?: string }> };
-    if (base.baseUrl && spec.servers?.[0]) spec.servers[0].url = base.baseUrl;
+    if (spec.servers?.[0]) spec.servers[0].url = base.baseUrl;
     const blob = new Blob([JSON.stringify(spec, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -686,14 +807,18 @@ export function CompanyApiReference({ tenantId, companyName, companyCode }: { te
   };
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">{companyName}</h2>
           <p className="text-sm text-muted-foreground">External systems authenticate with an API key for this company.</p>
+          <p className="mt-1 break-all text-xs text-muted-foreground">
+            API base URL: <code>{base.baseUrl || "Unavailable"}</code>
+            {base.source === "env" ? " (from PUBLIC_API_BASE_URL)" : base.source === "request" ? " (auto-detected)" : ""}
+          </p>
         </div>
         <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={downloadSpec} disabled={!catalog}>
+          <Button type="button" variant="outline" onClick={downloadSpec} disabled={!catalog || !base.baseUrl}>
             <Download className="h-4 w-4" /> Download OpenAPI JSON
           </Button>
           <Button type="button" onClick={() => document.getElementById("company-api-key-card")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
@@ -701,6 +826,29 @@ export function CompanyApiReference({ tenantId, companyName, companyCode }: { te
           </Button>
         </div>
       </div>
+      {base.warning && (!base.privateHost || isPublicPage) && (
+        <div className="space-y-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 p-3 text-sm text-yellow-900 dark:text-yellow-200">
+          <p>
+            {base.privateHost
+              ? "The API base URL is not set correctly for this server. Set PUBLIC_API_BASE_URL."
+              : base.warning}
+            {base.baseUrl ? <> Detected value: <code className="break-all">{base.baseUrl}</code></> : null}
+          </p>
+        </div>
+      )}
+      {base.baseUrl ? (
+        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          <Button type="button" size="sm" variant="outline" onClick={() => void testConnectivity()} disabled={testingConnectivity}>
+            {testingConnectivity ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Test connectivity
+          </Button>
+          {connectivity ? (
+            <span role="status" className={connectivity.ok ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"}>
+              {connectivity.ok ? "OK" : "Failed"}{connectivity.status ? ` (HTTP ${connectivity.status})` : ""}: {connectivity.reason}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       {error && (
         <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
           <span className="flex items-center gap-2"><AlertCircle className="h-4 w-4" /> {error}</span>
@@ -712,39 +860,40 @@ export function CompanyApiReference({ tenantId, companyName, companyCode }: { te
         companyName={companyName}
         companyCode={companyCode}
         onSecret={setSecret}
+        onDeleteScopeChange={handleDeleteScopeChange}
+        onHeaderSettingsChange={handleHeaderSettingsChange}
       />
       {loading ? (
-        <div className="flex justify-center py-16"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
+        <div className="space-y-3" aria-label="Loading API reference">
+          {[0, 1, 2].map((item) => (
+            <div key={item} className="animate-pulse rounded-md border p-4">
+              <div className="h-5 w-40 rounded bg-muted" />
+              <div className="mt-2 h-4 w-3/4 rounded bg-muted" />
+              <div className="mt-4 flex gap-2">{[0, 1, 2, 3].map((chip) => <div key={chip} className="h-8 w-20 rounded bg-muted" />)}</div>
+            </div>
+          ))}
+        </div>
       ) : catalog ? (
-        <div className="space-y-4">
+        catalog.topics.length ? (
           <CompanyApiCards<ApiOperation, ApiTopic>
             topics={catalog.topics}
-            baseUrl={base.baseUrl || catalog.baseUrl}
-            tenantId={tenantId}
-            onDetails={(topic, operation) => setDetail({ topic, operation })}
+            allowDelete={allowDelete}
+            renderOperation={(topic, operation) => (
+              <ApiOperationRow
+                operation={operation}
+                objectName={topic.objectName}
+                baseUrl={base.baseUrl}
+                open
+                detailsOnly
+                tenantId={tenantId}
+                secret={secret}
+                onSecretChange={setSecret}
+                headerSettings={headerSettings}
+              />
+            )}
           />
-        </div>
-      ) : null}
-      {detail && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={() => setDetail(null)}>
-          <div className="h-full w-full max-w-2xl overflow-y-auto bg-background p-4 shadow-xl" onClick={(event) => event.stopPropagation()} role="dialog" aria-label={detail.operation.summary}>
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h3 className="text-base font-semibold">{detail.operation.summary}</h3>
-              <Button type="button" size="sm" variant="outline" onClick={() => setDetail(null)}>Close</Button>
-            </div>
-            <ApiOperationRow
-              operation={detail.operation}
-              objectName={detail.topic.objectName}
-              baseUrl={base.baseUrl || catalog?.baseUrl || ""}
-              open
-              detailsOnly
-              tenantId={tenantId}
-              secret={secret}
-              onSecretChange={setSecret}
-            />
-          </div>
-        </div>
-      )}
+        ) : <p className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">No API objects are available for this company.</p>
+      ) : !error ? <p className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">The API reference is unavailable.</p> : null}
     </div>
   );
 }

@@ -1,4 +1,5 @@
-import { NextFunction, Response } from 'express';
+import type { NextFunction, Response } from 'express';
+import type { Application, RequestHandler } from 'express';
 import { AuthRequest } from './auth';
 import { authenticate } from './auth';
 import {
@@ -10,15 +11,22 @@ import {
 } from '../services/apiKeys';
 
 function queryCarriesKey(req: AuthRequest) {
-  const names = ['apiKey', 'api_key', 'key', 'token'];
-  return names.some((name) => {
-    const value = req.query[name];
-    return typeof value === 'string' && value.trim().length > 0;
-  });
+  const names = new Set(['apikey', 'api_key', 'key', 'token', 'access_token']);
+  return Object.keys(req.query).some((name) => names.has(name.toLowerCase()));
+}
+
+function bodyCarriesKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(bodyCarriesKey);
+  if (!value || typeof value !== 'object') return false;
+  const entries = Object.entries(value);
+  return entries.some(([name, nested]) =>
+    ['apikey', 'api_key'].includes(name.toLowerCase()) || bodyCarriesKey(nested),
+  );
 }
 
 export function requireApiKey(req: AuthRequest, res: Response, next: NextFunction) {
-  if (queryCarriesKey(req)) {
+  if (queryCarriesKey(req) || bodyCarriesKey(req.body)) {
+    attachApiKeyRequestLog(req, res);
     return res.status(401).json({
       ok: false,
       code: 'API_KEY_INVALID',
@@ -26,9 +34,9 @@ export function requireApiKey(req: AuthRequest, res: Response, next: NextFunctio
     });
   }
 
-  const apiKey = presentedApiKey(req);
-  if (apiKey) {
-    return authenticatePresentedApiKey(req, apiKey)
+  const presented = presentedApiKey(req);
+  if (presented) {
+    return authenticatePresentedApiKey(req, res, presented.apiKey, presented.headerName)
       .then((authenticated) => {
         req.user = authenticated.user;
         req.tenantId = authenticated.record.tenantId;
@@ -37,10 +45,10 @@ export function requireApiKey(req: AuthRequest, res: Response, next: NextFunctio
           tenantId: authenticated.record.tenantId,
           scopes: authenticated.record.scopes,
         };
-        attachApiKeyRequestLog(req, res, authenticated.record);
         return next();
       })
       .catch((error: unknown) => {
+        attachApiKeyRequestLog(req, res);
         if (error instanceof ApiKeyAuthError) {
           if (error.status === 429) res.setHeader('Retry-After', '60');
           return res.status(error.status).json(apiKeyErrorBody(error));
@@ -58,6 +66,7 @@ export function requireApiKey(req: AuthRequest, res: Response, next: NextFunctio
   );
   if (hasBrowserSession) return authenticate(req, res, next);
 
+  attachApiKeyRequestLog(req, res);
   return res.status(401).json({
     ok: false,
     code: 'API_KEY_MISSING',
@@ -66,17 +75,21 @@ export function requireApiKey(req: AuthRequest, res: Response, next: NextFunctio
 }
 
 export const EXTERNAL_API_MOUNTS = [
-  '/api/leads',
-  '/api/enquiries',
-  '/api/site-visits',
-  '/api/bookings',
-  '/api/projects',
-  '/api/units',
-  '/api/follow-ups',
-  '/api/activities',
-  '/api/call-details',
+  { path: '/api/leads', resource: 'leads' },
+  { path: '/api/enquiries', resource: 'enquiries' },
+  { path: '/api/site-visits', resource: 'site-visits' },
+  { path: '/api/bookings', resource: 'bookings' },
+  { path: '/api/projects', resource: 'projects' },
+  { path: '/api/units', resource: 'units' },
+  { path: '/api/follow-ups', resource: 'follow-ups' },
+  { path: '/api/activities', resource: 'activities' },
+  { path: '/api/call-details', resource: 'call-details' },
+  { path: '/api/quotations', resource: 'quotations' },
+  { path: '/api/receipts', resource: 'receipts' },
+  { path: '/api/records', resource: 'records' },
+  { path: '/api/notes', resource: 'notes' },
 ] as const;
 
-export function mountExternalApi(app: { use: Function }, path: string, router: unknown) {
+export function mountExternalApi(app: Application, path: string, router: RequestHandler) {
   app.use(path, requireApiKey, router);
 }

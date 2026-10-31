@@ -1,5 +1,5 @@
 export const PRIVATE_API_URL_WARNING =
-  'This URL is not reachable from outside. Open this page from your public domain, or set PUBLIC_API_BASE_URL, before giving it to a telecom provider.';
+  'The API base URL is not set correctly for this server. Set PUBLIC_API_BASE_URL.';
 
 export interface PublicApiBaseInput {
   nodeEnv?: string;
@@ -38,16 +38,17 @@ function splitHost(value: string): HostParts | null {
     const rest = raw.slice(end + 1);
     if (rest && !rest.startsWith(':')) return null;
     const port = rest.slice(1);
-    if (port && !/^\d+$/.test(port)) return null;
+    if (port && (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535)) return null;
     return { hostname, port: port || undefined };
   }
   const colon = raw.lastIndexOf(':');
   if (colon > -1 && raw.indexOf(':') === colon) {
     const hostname = raw.slice(0, colon);
     const port = raw.slice(colon + 1);
-    if (!hostname || !/^\d+$/.test(port)) return null;
+    if (!hostname || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) return null;
     return { hostname, port };
   }
+  if (!/^[a-zA-Z0-9.-]+$/.test(raw)) return null;
   return { hostname: raw };
 }
 
@@ -68,26 +69,39 @@ export function isPrivateApiHost(hostname: string) {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
   if (host.endsWith('.local')) return true;
-  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  const private172 = host.match(/^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
-  if (private172) {
-    const octet = Number(private172[1]);
-    if (octet >= 16 && octet <= 31) return true;
+  const mappedIpv4 = host.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/)?.[1];
+  if (mappedIpv4) return isPrivateApiHost(mappedIpv4);
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [a, b, c, d] = ipv4.slice(1).map(Number);
+    if ([a, b, c, d].some((part) => part > 255)) return true;
+    return a === 10
+      || a === 127
+      || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168)
+      || a === 0;
   }
-  if (host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return true;
+  if (host === '::' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return true;
   return false;
 }
 
-function envOrigin(value?: string): { origin: string; parts: HostParts } | null {
+function envOrigin(value?: string): { baseUrl: string; parts: HostParts } | null {
   const trimmed = (value || '').trim();
   if (!trimmed) return null;
   try {
     const url = new URL(trimmed);
-    if (url.username || url.password || (url.protocol !== 'http:' && url.protocol !== 'https:')) return null;
+    if (
+      url.username
+      || url.password
+      || url.search
+      || url.hash
+      || (url.protocol !== 'http:' && url.protocol !== 'https:')
+    ) return null;
     const parts = splitHost(url.host);
     if (!parts) return null;
-    return { origin: originFrom(url.protocol.replace(':', ''), parts), parts };
+    const path = url.pathname.replace(/\/+$/, '');
+    return { baseUrl: `${originFrom(url.protocol.replace(':', ''), parts)}${path}`, parts };
   } catch {
     return null;
   }
@@ -103,7 +117,7 @@ function allowlistEntries(input: PublicApiBaseInput) {
   return entries;
 }
 
-function hostAllowed(parts: HostParts, input: PublicApiBaseInput) {
+function hostAllowed(parts: HostParts, input: PublicApiBaseInput, protocol: string) {
   const hostname = parts.hostname.toLowerCase();
   const development = input.nodeEnv !== 'production';
   if (development && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname.endsWith('.local') || isPrivateApiHost(hostname))) {
@@ -113,7 +127,9 @@ function hostAllowed(parts: HostParts, input: PublicApiBaseInput) {
     const allowed = splitHost(entry);
     if (!allowed) return false;
     if (allowed.hostname.toLowerCase() !== hostname) return false;
-    return !allowed.port || allowed.port === parts.port;
+    if (allowed.port) return allowed.port === parts.port;
+    if (!parts.port) return true;
+    return parts.port === (protocol === 'https' ? '443' : '80');
   });
 }
 
@@ -127,7 +143,7 @@ export function getPublicApiBaseUrl(input: PublicApiBaseInput): PublicApiBaseUrl
     if (!configured) return rejected('PUBLIC_API_BASE_URL is not a valid http(s) origin.');
     const privateHost = isPrivateApiHost(configured.parts.hostname);
     return {
-      baseUrl: configured.origin,
+      baseUrl: configured.baseUrl,
       source: 'env',
       privateHost,
       warning: privateHost ? PRIVATE_API_URL_WARNING : null,
@@ -145,7 +161,7 @@ export function getPublicApiBaseUrl(input: PublicApiBaseInput): PublicApiBaseUrl
   if (!parts || !parts.hostname) {
     return rejected('Set PUBLIC_API_BASE_URL before sharing links.');
   }
-  if (!hostAllowed(parts, input)) {
+  if (!hostAllowed(parts, input, protocol)) {
     return rejected('The detected host is not on the allowlist. Set PUBLIC_API_BASE_URL before sharing links.');
   }
   const privateHost = isPrivateApiHost(parts.hostname);

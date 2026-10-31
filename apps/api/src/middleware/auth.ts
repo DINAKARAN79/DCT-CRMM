@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { prisma } from '@dct-crm/db';
 import { EffectivePermission } from '../services/effectivePermissions';
-import { ApiKeyAuthError, authenticatePresentedApiKey, presentedApiKey, requestIp } from '../services/apiKeys';
+import { requestIp } from '../services/apiKeys';
 import { impersonationStore } from '../services/impersonationContext';
 import {
   ImpersonationError,
@@ -45,28 +45,6 @@ export const authenticate = async (
 ) => {
   try {
     if (req.apiKey && req.user && req.tenantId) return next();
-    const apiKey = presentedApiKey(req);
-    if (apiKey) {
-      try {
-        const authenticated = await authenticatePresentedApiKey(req, apiKey);
-        req.user = authenticated.user;
-        req.tenantId = authenticated.record.tenantId;
-        req.apiKey = {
-          id: authenticated.record.id,
-          tenantId: authenticated.record.tenantId,
-          scopes: authenticated.record.scopes,
-        };
-        return next();
-      } catch (error) {
-        if (error instanceof ApiKeyAuthError) {
-          if (error.status === 429) res.setHeader('Retry-After', '60');
-          return res.status(error.status).json({ success: false, error: error.message, ok: false, code: error.code, message: error.message });
-        }
-        console.error('API key authentication error:', error);
-        return res.status(500).json({ success: false, error: 'Failed to authenticate API key' });
-      }
-    }
-
     const authorizationHeader = req.headers.authorization;
     const browserSessionRequired = req.headers['x-session-auth'] === 'required';
     const token = authorizationHeader?.startsWith('Bearer ')

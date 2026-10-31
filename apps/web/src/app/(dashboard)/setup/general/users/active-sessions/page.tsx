@@ -8,40 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 
-type SessionRow = {
-  id: string;
-  browser: string | null;
-  os: string | null;
-  ipAddress: string | null;
-  createdAt: string;
-  lastSeenAt: string;
-};
-
-type ActiveUser = {
-  id: string;
-  firstName: string;
-  lastName: string;
-  profile: { name: string } | null;
-  role: { name: string } | null;
-  sessionCount: number;
-  browser: string | null;
-  os: string | null;
-  ipAddress: string | null;
-  loggedInSince: string | null;
-  lastActivity: string | null;
-  isLoggedIn: boolean;
-  sessions: SessionRow[];
-};
-
-type Payload = {
-  onlineCount: number;
-  totalUsers: number;
-  loggedOut: number;
-  byProfile: Array<{ profile: string; count: number }>;
-  users: ActiveUser[];
-  detailsHidden?: boolean;
-};
-
 export default function ActiveSessionsPage() {
   const { toast } = useToast();
   const [search, setSearch] = React.useState("");

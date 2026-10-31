@@ -102,6 +102,7 @@ function CompaniesApiConsole({ onBack }: { onBack: () => void }) {
   const [search, setSearch] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const rightPaneRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -143,9 +144,13 @@ function CompaniesApiConsole({ onBack }: { onBack: () => void }) {
   );
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
 
+  React.useEffect(() => {
+    if (rightPaneRef.current) rightPaneRef.current.scrollTop = 0;
+  }, [selectedCompanyId]);
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-3">
+    <div className="flex min-h-screen flex-col gap-3 lg:h-full lg:min-h-0 lg:overflow-hidden">
+      <div className="flex shrink-0 items-center gap-3">
         <Button type="button" variant="outline" size="icon" onClick={onBack} aria-label="Back to companies">
           <ArrowLeft className="h-4 w-4" />
         </Button>
@@ -154,17 +159,20 @@ function CompaniesApiConsole({ onBack }: { onBack: () => void }) {
           <p className="text-sm text-muted-foreground">View and manage CRM API records within one selected company.</p>
         </div>
       </div>
-      {error && <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
-      <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <Card className="h-fit">
-          <CardHeader><CardTitle className="text-base">Companies</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
+      {error && <div className="shrink-0 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
+      <div className="grid min-w-0 gap-3 lg:min-h-0 lg:flex-1 lg:grid-cols-[320px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)] lg:gap-6 lg:overflow-hidden">
+        <Card data-testid="companies-api-company-pane" className="hidden h-full min-h-0 flex-col overflow-hidden lg:flex">
+          <CardHeader className="shrink-0">
+            <CardTitle className="text-base">Companies</CardTitle>
+            <p className="text-xs text-muted-foreground">{companies.length} {companies.length === 1 ? "company" : "companies"}</p>
+          </CardHeader>
+          <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search companies..." className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm" />
             </div>
-            {isLoading ? <div className="flex justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div> : (
-              <div className="max-h-[60vh] space-y-1 overflow-y-auto">
+            {isLoading ? <div className="flex flex-1 items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div> : (
+              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain">
                 {matchingCompanies.map((company) => (
                   <button key={company.id} type="button" onClick={() => setSelectedCompanyId(company.id)} className={`w-full rounded-md px-3 py-2 text-left text-sm ${selectedCompanyId === company.id ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}>
                     <span className="block font-medium">{company.name}</span>
@@ -176,7 +184,42 @@ function CompaniesApiConsole({ onBack }: { onBack: () => void }) {
             )}
           </CardContent>
         </Card>
-        <div className="space-y-4">
+        <div className="min-w-0 lg:hidden">
+          <Card>
+            <CardContent className="flex items-center gap-3 p-3">
+              <label htmlFor="api-company-selector" className="shrink-0 text-sm font-medium">Company:</label>
+              <select
+                id="api-company-selector"
+                value={selectedCompanyId}
+                onChange={(event) => {
+                  setSelectedCompanyId(event.target.value);
+                  setSearch("");
+                }}
+                disabled={isLoading || matchingCompanies.length === 0}
+                className="h-9 min-w-0 flex-1 truncate rounded-md border border-input bg-background px-3 text-sm"
+              >
+                {matchingCompanies.map((company) => (
+                  <option key={company.id} value={company.id}>{company.name}</option>
+                ))}
+                {!matchingCompanies.length && <option value="">No companies found</option>}
+              </select>
+              <details className="relative shrink-0">
+                <summary className="cursor-pointer list-none rounded-md border px-3 py-2 text-xs text-muted-foreground">
+                  Search
+                </summary>
+                <div className="absolute right-0 top-full z-30 mt-2 w-[min(20rem,calc(100vw-2rem))] rounded-md border bg-background p-3 shadow-lg">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search companies..." className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm" />
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">{companies.length} {companies.length === 1 ? "company" : "companies"}</p>
+                  {!matchingCompanies.length && <p className="py-3 text-center text-sm text-muted-foreground">No companies found.</p>}
+                </div>
+              </details>
+            </CardContent>
+          </Card>
+        </div>
+        <div ref={rightPaneRef} data-testid="companies-api-right-pane" className="min-w-0 scroll-pt-4 lg:min-h-0 lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-contain">
           {selectedCompany ? (
             <CompanyApiReference tenantId={selectedCompany.id} companyName={selectedCompany.name} companyCode={selectedCompany.companyCode} />
           ) : !isLoading ? (

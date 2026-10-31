@@ -2471,6 +2471,8 @@ model ApiKey {
   needsRegenerate    Boolean   @default(false)
   revealedToCompanyAdminAt DateTime?
   scopes             String[]
+  customHeaderName   String?
+  acceptOnlyCustomHeader Boolean @default(false)
   status             String    @default("active")
   rateLimitPerMinute Int       @default(120)
   ipAllowlist        String[]  @default([])
@@ -2489,8 +2491,8 @@ model ApiKey {
 
 model ApiKeyRequestLog {
   id         String   @id @default(cuid())
-  apiKeyId   String
-  tenantId   String
+  apiKeyId   String?
+  tenantId   String?
   method     String
   path       String
   status     Int

@@ -8,6 +8,8 @@ import {
   validateCatalogBody,
 } from '../services/companyApiCatalog';
 import { getPublicApiBaseUrl } from '../services/publicApiBaseUrl';
+import { testPublicApiConnectivity } from '../services/publicApiConnectivity';
+import { isValidCustomApiKeyHeaderName } from '../services/apiKeys';
 
 const router = Router();
 router.use(authenticate);
@@ -18,7 +20,11 @@ const trySchema = z.object({
   path: z.string().startsWith('/api/'),
   query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   body: z.unknown().optional(),
-  apiKey: z.string().min(8).optional(),
+  apiKey: z.never().optional(),
+  headerName: z.string().min(1).max(64).refine(
+    (name) => name.toLowerCase() === 'x-api-key' || name.toLowerCase() === 'authorization' || isValidCustomApiKeyHeaderName(name),
+    'Invalid API key header name',
+  ),
   sandbox: z.boolean().optional(),
   objectName: z.string().min(1),
   operationId: z.string().min(1),
@@ -30,26 +36,43 @@ function headerValue(req: AuthRequest, name: string) {
 }
 
 function resolvedBaseUrl(req: AuthRequest) {
+  const trustProxy = req.app.get('trust proxy fn') as ((address: string, index: number) => boolean) | undefined;
+  const immediateProxyTrusted = Boolean(trustProxy?.(req.socket.remoteAddress || '', 0));
   return getPublicApiBaseUrl({
     nodeEnv: process.env.NODE_ENV,
     publicBaseUrl: process.env.PUBLIC_API_BASE_URL,
     allowedHosts: process.env.ALLOWED_API_HOSTS,
-    trustProxy: Boolean(req.app.get('trust proxy')),
+    trustProxy: immediateProxyTrusted,
     protocol: req.protocol,
     host: req.get('host') || '',
-    forwardedProto: headerValue(req, 'x-forwarded-proto'),
-    forwardedHost: headerValue(req, 'x-forwarded-host'),
+    forwardedProto: immediateProxyTrusted ? headerValue(req, 'x-forwarded-proto') : undefined,
+    forwardedHost: immediateProxyTrusted ? headerValue(req, 'x-forwarded-host') : undefined,
   });
 }
 
-router.get('/', (_req: AuthRequest, res: Response) => {
-  res.json({ success: true, data: buildCompanyApiCatalog() });
+router.get('/', (req: AuthRequest, res: Response) => {
+  const base = resolvedBaseUrl(req);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, data: buildCompanyApiCatalog(base.baseUrl) });
 });
 
 router.get('/base-url', (req: AuthRequest, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
   res.json({ success: true, data: resolvedBaseUrl(req) });
 });
 
+router.get('/base-url/test', async (req: AuthRequest, res: Response) => {
+  const base = resolvedBaseUrl(req);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!base.baseUrl) {
+    return res.status(400).json({
+      success: true,
+      data: { ok: false, status: null, reason: base.warning || 'No valid public API base URL is available.' },
+    });
+  }
+  const result = await testPublicApiConnectivity(base.baseUrl, process.env.NODE_ENV);
+  return res.json({ success: true, data: result });
+});
 router.post('/validate', (req: AuthRequest, res: Response) => {
   const body = z.object({
     objectName: z.string().min(1),
@@ -73,7 +96,8 @@ router.post('/try', async (req: AuthRequest, res: Response) => {
   const validation = input.method === 'GET' || input.method === 'DELETE'
     ? { valid: true, fieldErrors: [] as Array<{ field: string; message: string }> }
     : validateCatalogBody(input.objectName, input.operationId, input.body);
-  if (!validation.valid || input.sandbox || !input.apiKey) {
+  const apiKeyHeader = headerValue(req, input.headerName.toLowerCase());
+  if (!validation.valid || input.sandbox || !apiKeyHeader) {
     return res.json({
       success: true,
       data: {
@@ -90,7 +114,10 @@ router.post('/try', async (req: AuthRequest, res: Response) => {
   if (!resolved.baseUrl) {
     return res.status(400).json({ success: false, error: resolved.warning || 'No public API URL is configured.' });
   }
-  const url = new URL(input.path, resolved.baseUrl);
+  const url = new URL(
+    input.path.replace(/^\/+/, ''),
+    `${resolved.baseUrl.replace(/\/+$/, '')}/`,
+  );
   if (url.host !== new URL(resolved.baseUrl).host) {
     return res.status(400).json({ success: false, error: 'That path is not in the API catalog' });
   }
@@ -100,7 +127,9 @@ router.post('/try', async (req: AuthRequest, res: Response) => {
     const response = await fetch(url, {
       method: input.method,
       headers: {
+        [input.headerName]: apiKeyHeader,
         Authorization: `Bearer ${input.apiKey}`,
+        ...(input.headerName.toLowerCase() === 'authorization' ? {} : { Authorization: '' }),
         ...(input.method === 'POST' || input.method === 'PUT' ? { 'Content-Type': 'application/json' } : {}),
       },
       body: input.method === 'GET' || input.method === 'DELETE' ? undefined : JSON.stringify(input.body ?? {}),

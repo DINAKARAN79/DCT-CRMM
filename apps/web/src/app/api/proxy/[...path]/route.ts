@@ -14,6 +14,12 @@ async function proxyRequest(
   const headers: Record<string, string> = {
     cookie: cookieHeader,
   };
+  const forwardedHost = request.headers.get('x-forwarded-host') || request.headers.get('host');
+  const forwardedProto = request.headers.get('x-forwarded-proto') || new URL(request.url).protocol.replace(':', '');
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  if (forwardedHost) headers['x-forwarded-host'] = forwardedHost;
+  if (forwardedProto) headers['x-forwarded-proto'] = forwardedProto;
+  if (forwardedFor) headers['x-forwarded-for'] = forwardedFor;
   const authorizationHeader = request.headers.get('authorization');
   if (authorizationHeader) {
     headers.authorization = authorizationHeader;
@@ -94,7 +100,7 @@ async function proxyRequest(
     res.headers.set('content-type', responseDataContentType);
   }
   const upstreamCache = response.headers.get('cache-control');
-  if (path.includes('api-key')) {
+  if (path.includes('api-key') || path.includes('api-reference/base-url')) {
     res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.headers.set('Pragma', 'no-cache');
   } else if (path.includes('active-users')) {

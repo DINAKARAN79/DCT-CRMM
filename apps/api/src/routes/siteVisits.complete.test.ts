@@ -178,7 +178,7 @@ describe('POST /api/site-visits/:id/complete', () => {
       });
 
     const response = await complete(validBody);
-    const body = await response.json();
+    const body = await response.json() as { data: { status: string; leadStatus: string } };
 
     expect(response.status).toBe(200);
     expect(body.data.status).toBe('COMPLETED');
@@ -226,7 +226,7 @@ describe('POST /api/site-visits/:id/complete', () => {
   it('returns 403 for a non-admin', async () => {
     authState.isAdmin = false;
     const response = await complete(validBody);
-    const body = await response.json();
+    const body = await response.json() as { error: string };
 
     expect(response.status).toBe(403);
     expect(body.error).toMatch(/admin/i);
@@ -237,7 +237,7 @@ describe('POST /api/site-visits/:id/complete', () => {
     database.siteVisitFindFirst.mockResolvedValueOnce({ id: 'visit-a', tenantId: 'tenant-a', status: 'COMPLETED', lead: { status: 'BOOKED' } });
     const completed = await complete(validBody);
     expect(completed.status).toBe(409);
-    expect((await completed.json()).error).toBe('Site visit is already Completed');
+    expect((await completed.json() as { error: string }).error).toBe('Site visit is already Completed');
 
     database.siteVisitFindFirst.mockResolvedValueOnce({
       id: 'visit-a',
@@ -248,7 +248,7 @@ describe('POST /api/site-visits/:id/complete', () => {
     });
     const cancelled = await complete(validBody);
     expect(cancelled.status).toBe(409);
-    expect((await cancelled.json()).error).toBe('Cancelled visits cannot be completed');
+    expect((await cancelled.json() as { error: string }).error).toBe('Cancelled visits cannot be completed');
     expect(database.siteVisitUpdateMany).not.toHaveBeenCalled();
   });
 

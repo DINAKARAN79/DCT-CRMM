@@ -203,14 +203,18 @@ describe('impersonation session', () => {
   function sessionApp() {
     const app = express();
     app.use(express.json());
-    const leads = {
+    const leads: Record<string, Record<string, { name: string }>> = {
       'shared-id': {
         'tenant-a': { name: 'Tenant A lead' },
         'tenant-b': { name: 'Tenant B lead' },
       },
     };
     app.get('/api/leads/:id', authenticate, (req: any, res) => {
-      res.json({ tenantId: req.tenantId, super: req.user.isSuperAdmin, data: leads[req.params.id]?.[req.tenantId] || null });
+      res.json({
+        tenantId: req.tenantId,
+        super: req.user.isSuperAdmin,
+        data: leads[String(req.params.id)]?.[String(req.tenantId)] || null,
+      });
     });
     app.post('/api/leads', authenticate, (_req, res) => res.json({ ok: true }));
     app.post('/api/data-administration/import', authenticate, (_req, res) => res.json({ ok: true }));
@@ -289,7 +293,7 @@ describe('start impersonation', () => {
       method: 'POST', headers, body: JSON.stringify({ viewOnly: false }),
     });
     expect(missing.status).toBe(403);
-    expect((await missing.json()).code).toBe('reauth_required');
+    expect((await missing.json() as { code: string }).code).toBe('reauth_required');
 
     const wrong = await fetch(`http://127.0.0.1:${port}/api/admin/companies/tenant-a/impersonate`, {
       method: 'POST', headers, body: JSON.stringify({ password: 'nope' }),
@@ -316,20 +320,20 @@ describe('start impersonation', () => {
       method: 'POST', headers, body: '{}',
     });
     expect(choose.status).toBe(409);
-    expect((await choose.json()).code).toBe('choose_admin');
+    expect((await choose.json() as { code: string }).code).toBe('choose_admin');
 
     database.userFindMany.mockResolvedValueOnce([]);
     const none = await fetch(`http://127.0.0.1:${port}/api/admin/companies/tenant-a/impersonate`, {
       method: 'POST', headers, body: '{}',
     });
     expect(none.status).toBe(409);
-    expect((await none.json()).code).toBe('no_admin');
+    expect((await none.json() as { code: string }).code).toBe('no_admin');
 
     const blocked = await fetch(`http://127.0.0.1:${port}/api/admin/companies/inactive/impersonate`, {
       method: 'POST', headers, body: '{}',
     });
     expect(blocked.status).toBe(409);
-    expect((await blocked.json()).code).toBe('company_inactive');
+    expect((await blocked.json() as { code: string }).code).toBe('company_inactive');
 
     const override = await fetch(`http://127.0.0.1:${port}/api/admin/companies/inactive/impersonate`, {
       method: 'POST', headers, body: JSON.stringify({ confirmInactive: true }),

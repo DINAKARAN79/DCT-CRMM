@@ -5,6 +5,7 @@ import { Copy, Download, Eye, EyeOff, KeyRound, Loader2, RotateCw, ShieldAlert }
 import { companyApi } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -21,6 +22,8 @@ interface CompanyApiKeyRecord {
   name: string;
   keyPrefix: string;
   scopes: string[];
+  customHeaderName?: string | null;
+  acceptOnlyCustomHeader?: boolean;
   status: string;
   lastUsedAt?: string | null;
   revokedAt?: string | null;
@@ -46,11 +49,15 @@ export function CompanyApiKeys({
   companyName,
   companyCode,
   onSecret,
+  onDeleteScopeChange,
+  onHeaderSettingsChange,
 }: {
   tenantId: string;
   companyName?: string;
   companyCode?: string;
   onSecret?: (secret: string) => void;
+  onDeleteScopeChange?: (enabled: boolean) => void;
+  onHeaderSettingsChange?: (customHeaderName: string | null, acceptOnlyCustomHeader: boolean) => void;
 }) {
   const { isSuperAdmin } = useAuth();
   const { toast } = useToast();
@@ -61,6 +68,8 @@ export function CompanyApiKeys({
   const [error, setError] = React.useState("");
   const [revealedKey, setRevealedKey] = React.useState("");
   const [allowDelete, setAllowDelete] = React.useState(false);
+  const [customHeaderName, setCustomHeaderName] = React.useState("");
+  const [acceptOnlyCustomHeader, setAcceptOnlyCustomHeader] = React.useState(false);
   const [passwordOpen, setPasswordOpen] = React.useState(false);
   const [password, setPassword] = React.useState("");
   const [passwordError, setPasswordError] = React.useState("");
@@ -109,7 +118,12 @@ export function CompanyApiKeys({
       const payload = response.data.data as KeyPayload;
       setCompany(payload.company);
       setRecord(payload.apiKey);
-      setAllowDelete(Boolean(payload.apiKey?.scopes?.some((scope) => scope.endsWith(":delete"))));
+      setCustomHeaderName(payload.apiKey?.customHeaderName || "");
+      setAcceptOnlyCustomHeader(Boolean(payload.apiKey?.acceptOnlyCustomHeader));
+      onHeaderSettingsChange?.(payload.apiKey?.customHeaderName || null, Boolean(payload.apiKey?.acceptOnlyCustomHeader));
+      const deleteEnabled = Boolean(payload.apiKey?.scopes?.some((scope) => scope.endsWith(":delete")));
+      setAllowDelete(deleteEnabled);
+      onDeleteScopeChange?.(deleteEnabled);
       if (!activeSuperAdmin && payload.canRevealOnce && payload.apiKey?.id !== autoRevealKeyId.current) {
         autoRevealKeyId.current = payload.apiKey?.id || null;
         void revealOnce();
@@ -120,7 +134,7 @@ export function CompanyApiKeys({
     } finally {
       setLoading(false);
     }
-  }, [activeSuperAdmin, revealOnce, tenantId]);
+  }, [activeSuperAdmin, onDeleteScopeChange, onHeaderSettingsChange, revealOnce, tenantId]);
 
   React.useEffect(() => {
     setKeyVisible("");
@@ -253,9 +267,32 @@ export function CompanyApiKeys({
       if (!response.data?.success) throw new Error(response.data?.error || "Failed to update API scopes.");
       const updated = response.data.data as CompanyApiKeyRecord;
       setRecord(updated);
-      setAllowDelete(updated.scopes.some((scope) => scope.endsWith(":delete")));
+      const deleteEnabled = updated.scopes.some((scope) => scope.endsWith(":delete"));
+      setAllowDelete(deleteEnabled);
+      onDeleteScopeChange?.(deleteEnabled);
     } catch (scopeError: any) {
       toast({ title: "Could not update API scopes", description: scopeError?.response?.data?.error || scopeError?.message || "Please try again.", variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateHeaderSettings = async () => {
+    setSaving(true);
+    try {
+      const name = customHeaderName.trim() || null;
+      const response = activeSuperAdmin
+        ? await companyApi.apiKey.updateHeaderSettings(tenantId, name, acceptOnlyCustomHeader)
+        : await companyApi.apiKey.setupUpdateHeaderSettings(name, acceptOnlyCustomHeader, tenantId);
+      if (!response.data?.success) throw new Error(response.data?.error || "Failed to update API header settings.");
+      const updated = response.data.data as CompanyApiKeyRecord;
+      setRecord(updated);
+      setCustomHeaderName(updated.customHeaderName || "");
+      setAcceptOnlyCustomHeader(Boolean(updated.acceptOnlyCustomHeader));
+      onHeaderSettingsChange?.(updated.customHeaderName || null, Boolean(updated.acceptOnlyCustomHeader));
+      toast({ title: "API header settings saved" });
+    } catch (headerError: any) {
+      toast({ title: "Could not update API header settings", description: headerError?.response?.data?.error || headerError?.message || "Please try again.", variant: "destructive" });
     } finally {
       setSaving(false);
     }
@@ -338,6 +375,29 @@ export function CompanyApiKeys({
                   ) : record.revealedToCompanyAdminAt ? (
                     <span className="text-xs text-muted-foreground">This key has already been shown.</span>
                   ) : null}
+                </div>
+              )}
+              {record && !record.needsRegenerate && (
+                <div className="space-y-3 rounded-md border p-3">
+                  <label className="block space-y-1 text-sm">
+                    <span className="font-medium">Custom header name <span className="text-muted-foreground">(optional)</span></span>
+                    <Input
+                      value={customHeaderName}
+                      onChange={(event) => setCustomHeaderName(event.target.value)}
+                      placeholder="X-Company-Token"
+                      pattern="[A-Za-z][A-Za-z0-9-]{1,60}"
+                      aria-describedby="api-key-header-help"
+                    />
+                    <span id="api-key-header-help" className="text-xs text-muted-foreground">Use a header name such as X-Company-Token. Reserved header names are not allowed.</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={acceptOnlyCustomHeader} onChange={(event) => setAcceptOnlyCustomHeader(event.target.checked)} disabled={!customHeaderName.trim()} />
+                    Accept only the custom header
+                  </label>
+                  {customHeaderName.trim() && <p className="break-all text-xs text-muted-foreground">Header: <code>{customHeaderName.trim()}: &lt;API key&gt;</code></p>}
+                  <Button type="button" size="sm" variant="outline" onClick={() => void updateHeaderSettings()} disabled={saving || status !== "Active"}>
+                    Save header settings
+                  </Button>
                 </div>
               )}
 

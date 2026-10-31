@@ -41,11 +41,16 @@ export interface ReportMetadataRegistry {
 
 const SKIPPED_PRISMA_TYPES = new Set(['Json', 'Bytes', 'Unsupported']);
 
+type PrismaModelMetadata = {
+  name: string;
+  fields: readonly { name: string; kind: string; type: string }[];
+};
+
 export function prismaDelegateName(modelName: string) {
   return modelName.charAt(0).toLowerCase() + modelName.slice(1);
 }
 
-export function findPrismaModel(objectName: string) {
+export function findPrismaModel(objectName: string): PrismaModelMetadata | undefined {
   return Prisma.dmmf.datamodel.models.find(
     (model) => model.name.toLowerCase() === objectName.toLowerCase(),
   );

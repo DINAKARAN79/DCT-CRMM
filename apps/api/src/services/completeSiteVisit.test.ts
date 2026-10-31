@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   COMPLETED_SITE_VISIT_STATUS,
@@ -34,7 +35,7 @@ describe('complete site visit validation', () => {
 
   it('uses the same Completed status the Quote Builder dropdown filters on', () => {
     const leadPage = readFileSync(
-      new URL('../../../../apps/web/src/app/(dashboard)/leads/[id]/page.tsx', import.meta.url),
+      resolve(__dirname, '../../../../apps/web/src/app/(dashboard)/leads/[id]/page.tsx'),
       'utf8',
     );
     expect(COMPLETED_SITE_VISIT_STATUS).toBe('COMPLETED');

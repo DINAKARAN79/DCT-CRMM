@@ -40,19 +40,6 @@ type TelephonySettings = {
   dncNumbers: string;
 };
 
-type CallLog = {
-  id: string;
-  createdAt: string;
-  userName: string;
-  leadLabel: string;
-  maskedNumber: string | null;
-  step: string;
-  code: string;
-  httpStatus: number | null;
-  durationMs: number | null;
-  reason: string | null;
-};
-
 type Probe = {
   reached?: boolean;
   httpStatus?: number | null;
@@ -89,9 +76,6 @@ export default function TelephonySettingsPage() {
   const [allowTestUrl, setAllowTestUrl] = React.useState(false);
   const [callIdFieldPath, setCallIdFieldPath] = React.useState("");
   const [probe, setProbe] = React.useState<Probe | null>(null);
-  const [logs, setLogs] = React.useState<CallLog[]>([]);
-  const [logUserFilter, setLogUserFilter] = React.useState("all");
-  const [logResultFilter, setLogResultFilter] = React.useState("all");
   const [dialpadUrl, setDialpadUrl] = React.useState(DEFAULT_DIALPAD_URL);
   const [dialpadMode, setDialpadMode] = React.useState<"DOCKED" | "NEW_TAB">("DOCKED");
   const [callMethod, setCallMethod] = React.useState<"SERVER_API" | "DIALPAD_MESSAGE">("SERVER_API");
@@ -166,17 +150,6 @@ export default function TelephonySettingsPage() {
     }));
   };
 
-  const loadLogs = React.useCallback(() => {
-    if (!isAuthenticated || (!isAdmin && !isSuperAdmin) || (isSuperAdmin && !tenantId)) return;
-    telephonySettingsApi.logs(tenantId || undefined)
-      .then((response) => setLogs(Array.isArray(response.data.data) ? response.data.data as CallLog[] : []))
-      .catch((error: unknown) => toast({
-        title: "Unable to load recent calls",
-        description: errorMessage(error, "Failed to load recent calls."),
-        variant: "destructive",
-      }));
-  }, [isAdmin, isAuthenticated, isSuperAdmin, tenantId, toast]);
-
   React.useEffect(() => {
     if (!isLoading && (!isAuthenticated || (!isAdmin && !isSuperAdmin))) {
       router.replace(isAuthenticated ? "/home" : "/login?redirect=/setup/integrations/telephony");
@@ -212,17 +185,11 @@ export default function TelephonySettingsPage() {
   }, [isAdmin, isAuthenticated, isSuperAdmin, tenantId, toast]);
 
   React.useEffect(() => {
-    loadLogs();
-  }, [loadLogs]);
-
-  React.useEffect(() => {
     if (!isAuthenticated || (!isAdmin && !isSuperAdmin) || (isSuperAdmin && !tenantId)) return;
     telephonySettingsApi.agents(tenantId || undefined)
       .then((response) => setAgents(Array.isArray(response.data.data) ? response.data.data as typeof agents : []))
       .catch((error: unknown) => toast({ title: "Unable to load agents", description: errorMessage(error, "Failed to load telephony agents."), variant: "destructive" }));
-    const timer = window.setInterval(loadLogs, 15_000);
-    return () => window.clearInterval(timer);
-  }, [isAdmin, isAuthenticated, isSuperAdmin, tenantId, toast, loadLogs]);
+  }, [isAdmin, isAuthenticated, isSuperAdmin, tenantId, toast]);
 
   React.useEffect(() => {
     if (!isDirty) return;
@@ -287,7 +254,6 @@ export default function TelephonySettingsPage() {
       }, tenantId || undefined);
       if (response.data.data) applySettings(response.data.data as TelephonySettings);
       toast({ title: "Telephony saved", description: "Click-to-call will use these settings." });
-      loadLogs();
     } catch (error: unknown) {
       toast({
         title: "Unable to save telephony",
@@ -387,12 +353,6 @@ export default function TelephonySettingsPage() {
     : status === "inactive"
       ? "bg-amber-50 text-amber-800"
       : "bg-slate-100 text-slate-600";
-  const filteredLogs = logs.filter((row) =>
-    (logUserFilter === "all" || row.userName === logUserFilter) &&
-    (logResultFilter === "all" || row.step === logResultFilter)
-  );
-  const logUsers = [...new Set(logs.map((row) => row.userName))].sort((a, b) => a.localeCompare(b));
-
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div className="flex items-center gap-3">
@@ -433,8 +393,6 @@ export default function TelephonySettingsPage() {
               Active
             </label>
             {!hasKey && !authToken.trim() ? <p className="text-xs text-amber-700">Add a Bizcall API key before enabling telephony.</p> : null}
-            <p className="text-sm">Last successful call: {logs.find((row) => row.code === "INITIATED") ? new Date(logs.find((row) => row.code === "INITIATED")!.createdAt).toLocaleString() : "None recorded"}</p>
-            <p className="text-sm">Last error: {logs.find((row) => row.code !== "INITIATED")?.reason || "None recorded"}</p>
           </section>
 
           <form
@@ -623,98 +581,11 @@ export default function TelephonySettingsPage() {
               <p className="text-xs text-muted-foreground">Lead rule: New leads move to Incoming when a call is initiated. Later statuses are never downgraded.</p>
             </section>
 
-            <section className="space-y-4 border-t pt-5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="font-medium">Agents</h2>
-                  <p className="text-sm text-muted-foreground">Bizcall does not expose agent registration status through the configured integration API; registration remains Unknown.</p>
-                </div>
-                <Button type="button" variant="outline" size="sm" onClick={() => toast({ title: "Registration unknown", description: "Bizcall has no agent-check endpoint configured; registration status cannot be verified." })}>Check agents in Bizcall</Button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {[...new Map(agents.filter((agent) => agent.profileId).map((agent) => [agent.profileId!, agent.profileName])).entries()].map(([profileId, profileName]) => (
-                  <div key={profileId} className="flex items-center gap-2 rounded-md border px-2 py-1 text-xs">
-                    <span>{profileName}</span>
-                    <Button type="button" size="sm" variant="outline" onClick={() => void saveProfileAccess(profileId, true)}>Grant</Button>
-                    <Button type="button" size="sm" variant="outline" onClick={() => void saveProfileAccess(profileId, false)}>Remove</Button>
-                  </div>
-                ))}
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="text-xs text-muted-foreground"><tr><th className="py-2 pr-3">User</th><th className="py-2 pr-3">User ID</th><th className="py-2 pr-3">Profile</th><th className="py-2 pr-3">Can use telephony</th><th className="py-2 pr-3">Registered in Bizcall</th><th className="py-2">Last call</th></tr></thead>
-                  <tbody>{agents.map((agent) => (
-                    <tr key={agent.userId} className="border-t">
-                      <td className="py-2 pr-3">{agent.userName}</td>
-                      <td className="py-2 pr-3 font-mono text-xs">{agent.userId}</td>
-                      <td className="py-2 pr-3">{agent.profileName}</td>
-                      <td className="py-2 pr-3"><button type="button" className="underline" onClick={() => void saveAgentAccess([agent.userId], !agent.canUseTelephony)}>{agent.canUseTelephony ? "Granted" : "Off"}</button></td>
-                      <td className="py-2 pr-3">Unknown</td>
-                      <td className="py-2">{agent.lastCallAt ? new Date(agent.lastCallAt).toLocaleString() : "—"}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>
-            </section>
-
             <div className="flex justify-end gap-2 border-t pt-4">
               <Button type="submit" disabled={saving || !isDirty}>{saving ? "Saving..." : "Save settings"}</Button>
             </div>
           </form>
 
-          <section className="space-y-3 rounded-xl border border-sky-100 bg-white p-5 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-medium">Recent calls</h2>
-              <div className="flex flex-wrap gap-2">
-                <select aria-label="Filter calls by user" className="h-9 rounded-md border bg-background px-2 text-sm" value={logUserFilter} onChange={(event) => setLogUserFilter(event.target.value)}>
-                  <option value="all">All users</option>
-                  {logUsers.map((userName) => <option key={userName} value={userName}>{userName}</option>)}
-                </select>
-                <select aria-label="Filter calls by result" className="h-9 rounded-md border bg-background px-2 text-sm" value={logResultFilter} onChange={(event) => setLogResultFilter(event.target.value)}>
-                  <option value="all">All results</option>
-                  <option value="sent_to_provider">Sent to provider</option>
-                  <option value="blocked_before_send">Blocked before send</option>
-                </select>
-                <Button type="button" variant="outline" size="sm" onClick={loadLogs}>Refresh</Button>
-              </div>
-            </div>
-            {logs.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No click-to-call attempts in the last 30 days.</p>
-            ) : filteredLogs.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No calls match the selected filters.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="text-xs text-muted-foreground">
-                    <tr>
-                      <th className="py-2 pr-3">Time</th>
-                      <th className="py-2 pr-3">User</th>
-                      <th className="py-2 pr-3">Lead</th>
-                      <th className="py-2 pr-3">Number</th>
-                      <th className="py-2 pr-3">Result</th>
-                      <th className="py-2 pr-3">HTTP</th>
-                      <th className="py-2 pr-3">Duration</th>
-                      <th className="py-2">Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredLogs.map((row) => (
-                      <tr key={row.id} className="border-t">
-                        <td className="py-2 pr-3 whitespace-nowrap">{new Date(row.createdAt).toLocaleString()}</td>
-                        <td className="py-2 pr-3">{row.userName}</td>
-                        <td className="py-2 pr-3">{row.leadLabel}</td>
-                        <td className="py-2 pr-3">{row.maskedNumber || "—"}</td>
-                        <td className="py-2 pr-3">{row.step === "sent_to_provider" ? "sent_to_provider" : "blocked_before_send"}</td>
-                        <td className="py-2 pr-3">{row.httpStatus ?? "—"}</td>
-                        <td className="py-2 pr-3">{row.durationMs ?? 0} ms</td>
-                        <td className="py-2">{row.reason}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
         </>
       )}
     </div>

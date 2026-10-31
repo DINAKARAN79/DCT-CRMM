@@ -350,7 +350,7 @@ router.get('/sessions', authenticate, async (req: AuthRequest, res: Response) =>
   res.json({
     success: true,
     data: rows
-      .filter((row) => isSessionOnline({ endedAt: null, isImpersonation: false, lastSeenAt: row.lastSeenAt }, now, settings.idleTimeoutSeconds * 1000))
+      .filter((row) => isSessionOnline({ id: row.id, endedAt: null, isImpersonation: false, lastSeenAt: row.lastSeenAt }, now, settings.idleTimeoutSeconds * 1000))
       .map(({ sessionTokenHash, ipAddress, ...row }) => ({
         ...row,
         ipAddress: showFullIp ? ipAddress : maskIp(ipAddress),

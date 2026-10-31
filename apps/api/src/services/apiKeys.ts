@@ -13,6 +13,10 @@ const OBJECT_RESOURCES = [
   'units',
   'enquiries',
   'activities',
+  'quotations',
+  'receipts',
+  'records',
+  'notes',
 ] as const;
 
 export const DELETE_API_SCOPES = OBJECT_RESOURCES.map((resource) => `${resource}:delete`) as string[];
@@ -165,6 +169,10 @@ export function scopeAllows(granted: string[], required: string) {
 }
 
 const RESOURCE_PREFIXES: Array<[string, string]> = [
+  ['/api/records', 'records'],
+  ['/api/quotations', 'quotations'],
+  ['/api/receipts', 'receipts'],
+  ['/api/notes', 'notes'],
   ['/api/call-details', 'call-details'],
   ['/api/follow-ups', 'follow-ups'],
   ['/api/site-visits', 'site-visits'],
@@ -187,11 +195,7 @@ export function requiredScopeForRequest(method: string, path: string): string | 
 }
 
 export function requestIp(req: Request) {
-  const forwarded = req.headers['x-forwarded-for'];
-  const raw = typeof forwarded === 'string' && forwarded.trim()
-    ? forwarded.split(',')[0].trim()
-    : req.ip || '';
-  return raw.replace(/^::ffff:/, '');
+  return (req.ip || '').replace(/^::ffff:/, '');
 }
 
 export function consumeApiKeyRateLimit(keyId: string, limit: number, now = Date.now()) {
@@ -206,16 +210,70 @@ export function consumeApiKeyRateLimit(keyId: string, limit: number, now = Date.
   return true;
 }
 
-export function presentedApiKey(req: Request) {
-  const header = req.headers['x-api-key'];
-  const fromHeader = Array.isArray(header) ? header[0] : header;
-  if (typeof fromHeader === 'string' && fromHeader.trim()) return fromHeader.trim();
-  const authorization = req.headers.authorization;
-  if (authorization?.startsWith('Bearer ')) {
-    const token = authorization.slice('Bearer '.length).trim();
-    if (token.startsWith('dct_')) return token;
+export interface PresentedApiKey {
+  apiKey: string;
+  headerName: string;
+}
+
+const NON_API_KEY_HEADER_NAMES = new Set([
+  'accept',
+  'accept-encoding',
+  'accept-language',
+  'cache-control',
+  'connection',
+  'content-length',
+  'content-type',
+  'cookie',
+  'dnt',
+  'forwarded',
+  'host',
+  'origin',
+  'pragma',
+  'priority',
+  'referer',
+  'te',
+  'upgrade',
+  'user-agent',
+  'via',
+  'x-correlation-id',
+  'x-csrf-token',
+  'x-real-ip',
+  'x-request-id',
+  'x-requested-with',
+  'x-session-auth',
+  'x-xsrf-token',
+]);
+
+export function presentedApiKey(req: Request): PresentedApiKey | null {
+  const candidates: PresentedApiKey[] = [];
+  for (const [headerName, value] of Object.entries(req.headers)) {
+    if (headerName === 'authorization') {
+      const authorization = typeof value === 'string' ? value : value?.[0];
+      if (authorization?.startsWith('Bearer ')) {
+        const token = authorization.slice('Bearer '.length).trim();
+        if (token.startsWith('dct_') || !/^[^.]+\.[^.]+\.[^.]+$/.test(token)) {
+          candidates.push({ apiKey: token, headerName });
+        }
+      }
+      continue;
+    }
+    if (headerName === 'x-api-key') {
+      const token = typeof value === 'string' ? value : value?.[0];
+      if (token?.trim()) candidates.push({ apiKey: token.trim(), headerName });
+      continue;
+    }
+    if (
+      NON_API_KEY_HEADER_NAMES.has(headerName)
+      || headerName.startsWith('access-control-')
+      || headerName.startsWith('proxy-')
+      || headerName.startsWith('sec-')
+      || headerName.startsWith('x-forwarded-')
+    ) continue;
+    const token = typeof value === 'string' ? value : value?.[0];
+    if (!token?.trim()) continue;
+    candidates.unshift({ apiKey: token.trim(), headerName });
   }
-  return null;
+  return candidates[0] || null;
 }
 
 const KEY_CACHE_MS = 0;
@@ -230,6 +288,8 @@ type CachedApiKey = {
   keyPrefix: string;
   keyHash: string;
   scopes: string[];
+  customHeaderName: string | null;
+  acceptOnlyCustomHeader: boolean;
   status: string;
   rateLimitPerMinute: number;
   ipAllowlist: string[];
@@ -254,6 +314,8 @@ export function publicApiKey(record: {
   name: string;
   keyPrefix: string;
   scopes: string[];
+  customHeaderName?: string | null;
+  acceptOnlyCustomHeader?: boolean;
   status?: string;
   rateLimitPerMinute: number;
   ipAllowlist: string[];
@@ -270,6 +332,8 @@ export function publicApiKey(record: {
     name: record.name,
     keyPrefix: record.keyPrefix,
     scopes: record.scopes,
+    customHeaderName: record.customHeaderName || null,
+    acceptOnlyCustomHeader: Boolean(record.acceptOnlyCustomHeader),
     status: record.revokedAt || record.status === 'revoked' ? 'revoked' : 'active',
     rateLimitPerMinute: record.rateLimitPerMinute,
     ipAllowlist: record.ipAllowlist,
@@ -437,6 +501,8 @@ export async function generateCompanyApiKey(tenantId: string, createdById: strin
         rateLimitPerMinute: existing[0]?.rateLimitPerMinute || 120,
         ipAllowlist: existing[0]?.ipAllowlist || [],
         expiresAt: null,
+        customHeaderName: existing[0]?.customHeaderName || null,
+        acceptOnlyCustomHeader: Boolean(existing[0]?.acceptOnlyCustomHeader),
         createdById,
       },
     });
@@ -454,6 +520,47 @@ export async function updateCompanyApiKeyScopes(tenantId: string, keyId: string,
   const record = await prisma.apiKey.update({ where: { id: existing.id }, data: { scopes } });
   forgetApiKeyCache(existing);
   return publicApiKey(record);
+}
+
+const RESERVED_CUSTOM_HEADER_NAMES = new Set([
+  'authorization',
+  'host',
+  'content-type',
+  'content-length',
+  'cookie',
+  'set-cookie',
+]);
+
+export function isValidCustomApiKeyHeaderName(value: string) {
+  return /^[A-Za-z][A-Za-z0-9-]{1,60}$/.test(value)
+    && !RESERVED_CUSTOM_HEADER_NAMES.has(value.toLowerCase())
+    && !value.toLowerCase().startsWith('x-forwarded-')
+    && !value.toLowerCase().startsWith('proxy-');
+}
+
+export async function updateCompanyApiKeyHeaderSettings(
+  tenantId: string,
+  keyId: string,
+  customHeaderName: string | null,
+  acceptOnlyCustomHeader: boolean,
+) {
+  if (customHeaderName !== null && !isValidCustomApiKeyHeaderName(customHeaderName)) {
+    throw new ApiKeyAuthError(400, 'Custom header name is invalid or reserved.', 'INVALID_CUSTOM_HEADER');
+  }
+  if (acceptOnlyCustomHeader && !customHeaderName) {
+    throw new ApiKeyAuthError(400, 'Set a custom header name before requiring it.', 'CUSTOM_HEADER_REQUIRED');
+  }
+  const existing = await prisma.apiKey.findFirst({ where: { id: keyId, tenantId } });
+  if (!existing) throw new ApiKeyAuthError(404, 'API key not found', 'API_KEY_NOT_FOUND');
+  if (existing.revokedAt || existing.status === 'revoked') {
+    throw new ApiKeyAuthError(409, 'Revoked API keys cannot be changed', 'API_KEY_REVOKED');
+  }
+  const updated = await prisma.apiKey.update({
+    where: { id: existing.id },
+    data: { customHeaderName, acceptOnlyCustomHeader },
+  });
+  forgetApiKeyCache(existing);
+  return publicApiKey(updated);
 }
 
 export async function revokeCompanyApiKey(tenantId: string, keyId: string) {
@@ -507,6 +614,8 @@ export async function rotateCompanyApiKey(
         rateLimitPerMinute: existing.rateLimitPerMinute,
         ipAllowlist: existing.ipAllowlist,
         expiresAt: existing.expiresAt,
+        customHeaderName: existing.customHeaderName,
+        acceptOnlyCustomHeader: existing.acceptOnlyCustomHeader,
         createdById,
       },
     });
@@ -565,6 +674,8 @@ async function loadApiKeyRecord(rawKey: string): Promise<CachedApiKey | null> {
     keyPrefix: record.keyPrefix,
     keyHash: record.keyHash,
     scopes: record.scopes,
+    customHeaderName: record.customHeaderName || null,
+    acceptOnlyCustomHeader: Boolean(record.acceptOnlyCustomHeader),
     status: record.status || 'active',
     rateLimitPerMinute: record.rateLimitPerMinute,
     ipAllowlist: record.ipAllowlist,
@@ -603,8 +714,8 @@ export function rememberApiKeyUse(recordId: string) {
 }
 
 export function logApiKeyRequest(input: {
-  apiKeyId: string;
-  tenantId: string;
+  apiKeyId: string | null;
+  tenantId: string | null;
   method: string;
   path: string;
   status: number;
@@ -622,15 +733,25 @@ export function logApiKeyRequest(input: {
       durationMs: input.durationMs,
       ipAddress: input.ipAddress,
     },
-  }).catch(() => undefined);
+  }).catch((error: unknown) => {
+    console.error('Failed to write API key request audit log:', error);
+  });
 }
 
-export function attachApiKeyRequestLog(req: Request, res: Response, record: { id: string; tenantId: string }) {
+const loggedApiKeyResponses = new WeakSet<Response>();
+
+export function attachApiKeyRequestLog(
+  req: Request,
+  res: Response,
+  record?: { id: string; tenantId: string },
+) {
+  if (loggedApiKeyResponses.has(res)) return;
+  loggedApiKeyResponses.add(res);
   const started = Date.now();
   res.on('finish', () => {
     logApiKeyRequest({
-      apiKeyId: record.id,
-      tenantId: record.tenantId,
+      apiKeyId: record?.id || null,
+      tenantId: record?.tenantId || null,
       method: req.method,
       path: req.originalUrl || req.path || '',
       status: res.statusCode,
@@ -640,23 +761,36 @@ export function attachApiKeyRequestLog(req: Request, res: Response, record: { id
   });
 }
 
-function requestedTenantId(req: Request) {
-  const queryTenant = typeof req.query.tenantId === 'string' ? req.query.tenantId.trim() : '';
+function requestedTenantIds(req: Request): unknown[] {
+  const hints: unknown[] = [];
+  const queryTenant = req.query.tenantId;
+  if (queryTenant !== undefined) {
+    hints.push(...(Array.isArray(queryTenant) ? queryTenant : [queryTenant]));
+  }
   const body = req.body as { tenantId?: unknown } | undefined;
-  const bodyTenant = body && typeof body.tenantId === 'string' ? body.tenantId.trim() : '';
-  return queryTenant || bodyTenant;
+  if (body && body.tenantId !== undefined) hints.push(body.tenantId);
+  return hints;
 }
 
-export async function authenticatePresentedApiKey(req: Request, rawKey: string) {
+export async function authenticatePresentedApiKey(req: Request, res: Response, rawKey: string, headerName: string) {
   const wellFormed = liveKeyPrefix(rawKey) || /^dct_[A-Za-z0-9_-]{16,}$/.test(rawKey);
   if (!wellFormed) throw new ApiKeyAuthError(401, 'API key is invalid.', 'API_KEY_INVALID');
   const computedHash = hashApiKey(rawKey);
   const record = await loadApiKeyRecord(rawKey);
+  if (record) attachApiKeyRequestLog(req, res, record);
   if (!record) {
     hashesEqual(computedHash, computedHash);
     throw new ApiKeyAuthError(401, 'API key is invalid.', 'API_KEY_INVALID');
   }
   assertKeyUsable(record, computedHash);
+  const isConfiguredCustomHeader = Boolean(record.customHeaderName && record.customHeaderName.toLowerCase() === headerName.toLowerCase());
+  const isStandardHeader = headerName === 'authorization' || headerName === 'x-api-key';
+  if (isStandardHeader && record.acceptOnlyCustomHeader && !isConfiguredCustomHeader) {
+    throw new ApiKeyAuthError(401, 'API key is invalid.', 'API_KEY_INVALID');
+  }
+  if (!isStandardHeader && !isConfiguredCustomHeader) {
+    throw new ApiKeyAuthError(401, 'API key is invalid.', 'API_KEY_INVALID');
+  }
 
   const tenant = await prisma.tenant.findUnique({
     where: { id: record.tenantId },
@@ -673,8 +807,8 @@ export async function authenticatePresentedApiKey(req: Request, rawKey: string) 
     throw new ApiKeyAuthError(403, 'Company is inactive. Contact Super Admin.', 'COMPANY_INACTIVE');
   }
 
-  const requestedTenant = requestedTenantId(req);
-  if (requestedTenant && requestedTenant !== record.tenantId) {
+  const tenantHints = requestedTenantIds(req);
+  if (tenantHints.some((hint) => typeof hint !== 'string' || hint.trim() !== record.tenantId)) {
     throw new ApiKeyAuthError(403, 'tenantId does not match this API key', 'TENANT_MISMATCH');
   }
 

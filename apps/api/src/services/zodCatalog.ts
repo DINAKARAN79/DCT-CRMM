@@ -91,7 +91,7 @@ function futureDate(daysAhead = 14): string {
   return futureIso(daysAhead * 24).slice(0, 10);
 }
 
-function stringChecks(schema: ZodTypeAny) {
+function stringChecks(schema: ZodTypeAny): { max?: number; format?: string } {
   const checks = Array.isArray(schema._def?.checks) ? schema._def.checks : [];
   const max = checks.find((check: { kind: string }) => check.kind === 'max')?.value as number | undefined;
   const format = checks.some((check: { kind: string }) => check.kind === 'email')

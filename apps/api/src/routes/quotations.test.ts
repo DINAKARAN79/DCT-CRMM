@@ -46,6 +46,7 @@ import quotationsRouter from './quotations';
 const servers: Server[] = [];
 const tx = {
   sequence: { upsert: database.sequenceUpsert },
+  unit: { findFirst: database.unitFindFirst },
   quotation: { create: database.quotationCreate },
 };
 
@@ -68,7 +69,7 @@ const quotationInput = {
   paymentPlan,
 };
 
-async function createQuotation(input = quotationInput) {
+async function createQuotation(input: Record<string, unknown> = quotationInput) {
   const app = express();
   app.use(express.json());
   app.use('/api/quotations', quotationsRouter);

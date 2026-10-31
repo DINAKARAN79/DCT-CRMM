@@ -105,11 +105,17 @@ export async function impersonatorNames(ids: Array<string | null | undefined>) {
   return new Map(users.map((user) => [user.id, displayName(user)]));
 }
 
-export async function withImpersonatorNames<T extends { impersonatedById?: string | null }>(rows: T[]) {
-  const names = await impersonatorNames(rows.map((row) => row.impersonatedById));
-  return rows.map((row) => ({
+export async function withImpersonatorNames<T extends object>(rows: T[]) {
+  const rowsWithActor = rows.map((row) => ({
+    row,
+    actorId: 'impersonatedById' in row && typeof row.impersonatedById === 'string'
+      ? row.impersonatedById
+      : null,
+  }));
+  const names = await impersonatorNames(rowsWithActor.map(({ actorId }) => actorId));
+  return rowsWithActor.map(({ row, actorId }) => ({
     ...row,
-    impersonatedByName: row.impersonatedById ? names.get(row.impersonatedById) || 'Superadmin' : null,
+    impersonatedByName: actorId ? names.get(actorId) || 'Superadmin' : null,
   }));
 }
 

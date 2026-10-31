@@ -105,18 +105,15 @@ export const createApp = () => {
   morgan.token('safe-url', (req) => {
     const request = req as express.Request;
     const url = request.originalUrl || request.url || '';
-    return url.replace(/(\/api\/integrations\/telephony\/)[^/?]+/g, '$1[redacted]');
+    return url
+      .replace(/(\/api\/integrations\/telephony\/)[^/?]+/g, '$1[redacted]')
+      .replace(/([?&](?:apiKey|api_key|key|token|access_token|x-api-key)=)[^&]*/gi, '$1[redacted]');
   });
   app.use(morgan(':remote-addr - :remote-user [:date[clf]] ":method :safe-url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"'));
-
-  app.get('/', (req, res) => {
-    res.json({ status: 'ok', service: 'DCT CRM API', timestamp: new Date().toISOString() });
-  });
 
   const health = (_req: express.Request, res: express.Response) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   };
-  app.get('/health', health);
   app.get('/api/health', health);
 
   app.use('/api/auth', authRouter);
@@ -128,9 +125,9 @@ export const createApp = () => {
   mountExternalApi(app, '/api/leads', leadRouter);
   mountExternalApi(app, '/api/enquiries', enquiryRouter);
   mountExternalApi(app, '/api/site-visits', siteVisitRouter);
-  app.use('/api/quotations', quotationRouter);
+  mountExternalApi(app, '/api/quotations', quotationRouter);
   mountExternalApi(app, '/api/bookings', bookingRouter);
-  app.use('/api/receipts', receiptRouter);
+  mountExternalApi(app, '/api/receipts', receiptRouter);
   mountExternalApi(app, '/api/projects', projectRouter);
   mountExternalApi(app, '/api/units', unitRouter);
   mountExternalApi(app, '/api/follow-ups', followUpRouter);
@@ -159,6 +156,7 @@ export const createApp = () => {
   app.use('/api/setup', setupCompanyApiKeyRouter);
   app.use('/api/super-admin/companies/:tenantId/telephony', companyTelephonyRouter);
   app.use('/api/super-admin/api-catalog', companyApiCatalogRouter);
+  app.use('/api/admin/api-reference', companyApiCatalogRouter);
   app.use('/api/super-admin/presence-counts', presenceCountsRouter);
   app.use('/api/super-admin', companyRouter);
   app.use('/api/super-admin/project-layouts', projectLayoutsRouter);
@@ -176,7 +174,7 @@ export const createApp = () => {
   app.use('/api/layout-assignments', layoutAssignmentRoutes);
   app.use('/api/object-permissions', objectPermissionRouter);
   app.use('/api/field-permissions', fieldPermissionRouter);
-  app.use('/api/records', dynamicCrudRouter);
+  mountExternalApi(app, '/api/records', dynamicCrudRouter);
   app.use('/api/permissions', permissionCatalogRouter);
   app.use('/api/new-permission-sets', newPermissionSetRouter);
   app.use('/api/user-permissions', userPermissionRouter);
@@ -187,7 +185,7 @@ export const createApp = () => {
   app.use('/api/data-administration', dataAdministrationRouter);
   app.use('/api/profile-security', profileSecurityRouter);
   app.use('/api/rrqueues', rrQueueRouter);
-  app.use('/api/notes', notesRouter);
+  mountExternalApi(app, '/api/notes', notesRouter);
   mountExternalApi(app, '/api/call-details', callDetailsRouter);
   app.use('/api/gre', greRouter);
 

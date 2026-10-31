@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '@dct-crm/db';
 import { authenticate, AuthRequest } from '../middleware/auth';
-import { ApiKeyAuthError, ApiKeyEncryptionError, DELETE_API_SCOPES, generateCompanyApiKey, getCompanyApiKey, getSetupCompanyApiKey, revealCompanyApiKey, revealSetupCompanyApiKey, revokeCompanyApiKey, rotateCompanyApiKey, updateCompanyApiKeyScopes } from '../services/apiKeys';
+import { ApiKeyAuthError, ApiKeyEncryptionError, DELETE_API_SCOPES, generateCompanyApiKey, getCompanyApiKey, getSetupCompanyApiKey, revealCompanyApiKey, revealSetupCompanyApiKey, revokeCompanyApiKey, rotateCompanyApiKey, updateCompanyApiKeyHeaderSettings, updateCompanyApiKeyScopes } from '../services/apiKeys';
 
 const superAdminRouter = Router({ mergeParams: true });
 const setupRouter = Router();
@@ -54,7 +54,14 @@ function sendError(res: Response, error: unknown) {
   return res.status(500).json({ success: false, error: 'Failed to manage the company API key' });
 }
 
-async function writeKeyAudit(tenantId: string, userId: string, action: string, keyId: string, ipAddress: string | undefined) {
+async function writeKeyAudit(
+  tenantId: string,
+  userId: string,
+  action: string,
+  keyId: string,
+  ipAddress: string | undefined,
+  details: Record<string, unknown> = {},
+) {
   const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
   await prisma.auditLog.create({
     data: {
@@ -67,6 +74,7 @@ async function writeKeyAudit(tenantId: string, userId: string, action: string, k
         companyId: tenantId,
         companyName: tenant?.name || null,
         occurredAt: new Date().toISOString(),
+        ...details,
       },
       ipAddress,
     },
@@ -164,6 +172,33 @@ superAdminRouter.post('/revoke', async (req: AuthRequest, res: Response) => {
 const scopesSchema = z.object({
   allowDelete: z.boolean(),
 });
+const headerSettingsSchema = z.object({
+  customHeaderName: z.string().nullable(),
+  acceptOnlyCustomHeader: z.boolean(),
+});
+
+async function saveHeaderSettings(tenantId: string, keyId: string, userId: string, body: unknown, ipAddress?: string) {
+  const { customHeaderName, acceptOnlyCustomHeader } = headerSettingsSchema.parse(body);
+  const normalizedHeaderName = customHeaderName?.trim() || null;
+  const updated = await updateCompanyApiKeyHeaderSettings(tenantId, keyId, normalizedHeaderName, acceptOnlyCustomHeader);
+  await writeKeyAudit(tenantId, userId, 'API_KEY_HEADER_SETTINGS_UPDATED', keyId, ipAddress, {
+    customHeaderName: normalizedHeaderName,
+    acceptOnlyCustomHeader,
+  });
+  return updated;
+}
+
+superAdminRouter.patch('/header-settings', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = String(req.params.tenantId);
+    const current = await getCompanyApiKey(tenantId);
+    if (!current.apiKey) return res.status(404).json({ success: false, error: 'No API key exists for this company' });
+    const updated = await saveHeaderSettings(tenantId, current.apiKey.id, req.user!.id, req.body || {}, req.ip);
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    return sendError(res, error);
+  }
+});
 
 superAdminRouter.patch('/scopes', async (req: AuthRequest, res: Response) => {
   try {
@@ -239,6 +274,18 @@ setupRouter.patch('/api-key/scopes', async (req: AuthRequest, res: Response) => 
       : current.apiKey.scopes.filter((scope) => !DELETE_API_SCOPES.includes(scope));
     const updated = await updateCompanyApiKeyScopes(tenantId, current.apiKey.id, scopes);
     await writeKeyAudit(tenantId, req.user!.id, 'API_KEY_SCOPES_UPDATED', updated.id, req.ip);
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    return sendError(res, error);
+  }
+});
+
+setupRouter.patch('/api-key/header-settings', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = setupTenantId(req);
+    const current = await getSetupCompanyApiKey(tenantId);
+    if (!current.apiKey) return res.status(404).json({ success: false, error: 'No API key exists for this company' });
+    const updated = await saveHeaderSettings(tenantId, current.apiKey.id, req.user!.id, req.body || {}, req.ip);
     return res.json({ success: true, data: updated });
   } catch (error) {
     return sendError(res, error);

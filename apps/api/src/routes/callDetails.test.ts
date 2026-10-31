@@ -159,7 +159,7 @@ afterEach(async () => {
 describe('lead call details', () => {
   it('returns call details only when they belong to the authenticated tenant and accessible lead', async () => {
     const response = await requestCall('GET', 'call-a');
-    const body = await response.json();
+    const body = await response.json() as { data: { leadStatus: string; leadStatusChanged: boolean } };
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({ success: true, data: { id: 'call-a', leadId: 'lead-a' } });
@@ -257,7 +257,7 @@ describe('lead call details', () => {
       endAt: '2026-10-12T09:05:00.000Z',
       status: 'NO_ANSWER',
     });
-    const body = await response.json();
+    const body = await response.json() as { data: { leadStatus: string; leadStatusChanged: boolean } };
 
     expect(response.status).toBe(201);
     expect(body.data).toMatchObject({ leadStatus: 'INCOMING', leadStatusChanged: true });
