@@ -111,6 +111,7 @@ model Tenant {
 
   @@index([slug])
   @@index([companyCode])
+  @@index([createdAt])
 }
 
 model User {
@@ -191,6 +192,7 @@ model User {
 
   @@unique([tenantId, email])
   @@index([tenantId])
+  @@index([tenantId, createdAt])
   @@index([email])
 }
 
@@ -1140,6 +1142,7 @@ model Quotation {
   updatedAt       DateTime        @updatedAt
 
   @@unique([tenantId, quotationNumber])
+  @@index([tenantId, createdAt])
   @@index([tenantId, leadId, createdAt])
   @@index([tenantId, siteVisitId])
   @@index([tenantId, unitId])
@@ -1217,6 +1220,7 @@ model Booking {
   updatedAt                 DateTime      @updatedAt
 
   @@unique([tenantId, bookingNumber])
+  @@index([tenantId, createdAt])
   @@index([tenantId, leadId, createdAt])
   @@index([tenantId, unitId, status])
   @@index([ownerId])
@@ -1251,6 +1255,7 @@ model Receipt {
   updatedAt           DateTime              @updatedAt
 
   @@unique([tenantId, receiptNumber])
+  @@index([tenantId, createdAt])
   @@index([tenantId, leadId, createdAt])
   @@index([tenantId, bookingId, receivedDate])
   @@index([tenantId, approvalStatus, approvalSubmittedAt])
@@ -1320,6 +1325,7 @@ model SiteVisit {
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([tenantId, assigneeId])
+  @@index([tenantId, createdAt])
   @@index([leadId])
   @@index([previousSiteVisitId])
   @@index([tenantId, salesHandoffAt])
@@ -1374,6 +1380,7 @@ model Project {
 
   @@unique([tenantId, name])
   @@index([tenantId])
+  @@index([tenantId, createdAt])
 }
 
 model Unit {
@@ -1420,6 +1427,7 @@ model Unit {
   @@unique([tenantId, projectId, block, floor, number], map: "Unit_location_number_key")
   @@unique([tenantId, unitCode])
   @@index([tenantId])
+  @@index([tenantId, createdAt])
   @@index([tenantId, projectId])
   @@index([tenantId, projectId, type, floor, status])
   @@index([tenantId, status])
@@ -1610,14 +1618,15 @@ model CallDetail {
   landingNumber      String?  @db.VarChar(255)
   lastModifiedById   String?
   lastModifiedBy     User?    @relation("CallDetailModifier", fields: [lastModifiedById], references: [id], onDelete: SetNull)
-  leadId             String
-  lead               Lead     @relation(fields: [leadId], references: [id])
+  leadId             String?
+  lead               Lead?    @relation(fields: [leadId], references: [id])
   ownerId            String?
   owner              User?    @relation("CallDetailOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   parentId           String?  @db.VarChar(100)
   parentUrl          String?  @db.VarChar(255)
   recordingFile      String?  @db.VarChar(255)
   startAt            DateTime
+  answeredAt         DateTime?
   status             String   @default("COMPLETED") @db.VarChar(50)
   notes              String?
   disposition        String?  @db.VarChar(120)
@@ -1629,6 +1638,8 @@ model CallDetail {
 
   @@unique([tenantId, name])
   @@index([tenantId, leadId, startAt])
+  @@index([tenantId, createdById, startAt])
+  @@index([tenantId, createdById, providerCallId])
   @@index([caseId])
   @@index([createdById])
   @@index([lastModifiedById])
@@ -2626,6 +2637,7 @@ model TelephonySetting {
   duplicateGuardSeconds  Int      @default(10)
   callsPerMinute         Int      @default(10)
   maskNumbers            Boolean  @default(false)
+  sendTenantIdInDial     Boolean  @default(true)
   blockDnc               Boolean  @default(false)
   dncNumbers             String   @default("")
   createdAt              DateTime @default(now())
@@ -2663,4 +2675,53 @@ model TelephonyRequestLog {
 
   @@index([tenantId, createdAt])
   @@map("telephony_request_logs")
+}
+
+model PlatformReportDefinition {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  definition  Json
+  isSystem    Boolean  @default(false)
+  createdBy   String
+  updatedBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([name])
+  @@index([isSystem, updatedAt])
+}
+
+model PlatformDashboardDefinition {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  definition  Json
+  isSystem    Boolean  @default(false)
+  createdBy   String
+  updatedBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([name])
+  @@index([isSystem, updatedAt])
+}
+
+model PlatformReportExecutionAudit {
+  id            String   @id @default(cuid())
+  actorId       String
+  operation     String
+  targetType    String
+  targetId      String?
+  tenantIds     Json?
+  resultCount   Int?
+  filters       Json?
+  durationMs    Int?
+  succeeded     Boolean  @default(true)
+  errorCode     String?
+  createdAt     DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([createdAt])
 }

@@ -97,7 +97,8 @@ describe('role-based sidebar matrix', () => {
   it('Superadmin sees the superadmin navigation', () => {
     const nav = getNavigationByProfile(undefined, [], () => false, true, true);
     expect(nav.map((item) => item.title)).toEqual([
-      'Home', 'Companies', 'Companies API', 'Custom Project Layouts', 'Dashboard', 'Dashboards', 'Reports',
+      'Home', 'Companies', 'Companies API', 'Custom Project Layouts',
+      'Platform Dashboard', 'Dashboard Management', 'Report Management', 'Report Builder', 'Object Explorer', 'Tenant Analytics',
     ]);
   });
 });

@@ -2,13 +2,28 @@
 
 import * as React from "react";
 import { usePathname } from "next/navigation";
-import { Phone, RefreshCw } from "lucide-react";
+import { Phone, RefreshCw, X } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
-import { clickToCallApi } from "@/lib/api";
-import { buildBizcallDialpadUrl, BIZCALL_DIALPAD_WINDOW_NAME, claimDialpadLock, isDialpadLockStale, isTrustedBizcallMessage, openBizcallDialpad, readDialpadLock } from "@/lib/bizcall-dialpad";
+import { clickToCallApi, impersonationMeta } from "@/lib/api";
+import {
+  buildBizcallDialpadUrl,
+  buildBizcallNamespaceKey,
+  BIZCALL_DIALPAD_WINDOW_NAME,
+  claimDialpadLock,
+  isDialpadLockStale,
+  isTrustedBizcallMessage,
+  openBizcallDialpad,
+  maskDialpadNumber,
+  readDialpadLock,
+  recordDialpadMonitorEntry,
+  sanitizeDialpadFields,
+  sendDialerCommand,
+  type DialerCommand,
+} from "@/lib/bizcall-dialpad";
 import { placeLeadCall, type ClickToCallOutcome } from "@/lib/click-to-call";
-import { registerTelephonyDialHandler, setTelephonyNumberMasking, setTelephonyStatus } from "@/lib/telephony-client";
+import { registerDialerCommandHandler, registerTelephonyDialHandler, setTelephonyNumberMasking, setTelephonyStatus } from "@/lib/telephony-client";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
 
 type DialpadConfig = {
   active: boolean;
@@ -19,10 +34,36 @@ type DialpadConfig = {
   theme: "CRM" | "LIGHT" | "DARK";
   defaultDockState: "COLLAPSED" | "EXPANDED";
   maskNumbers: boolean;
+  sendTenantIdInDial: boolean;
 };
 
-type DialRequest = { leadId: string; phoneField: "phone" | "mobile" | "secondaryPhone"; leadName: string };
-type MessageData = { type?: unknown; extension?: unknown; callUuid?: unknown; duration?: unknown; disposition?: unknown; notes?: unknown };
+type DialRequest = { leadId: string; phoneField: "phone" | "mobile" | "secondaryPhone"; leadName: string; taskId?: string };
+type MessageData = {
+  type?: unknown;
+  name?: unknown;
+  extension?: unknown;
+  number?: unknown;
+  leadName?: unknown;
+  callUuid?: unknown;
+  duration?: unknown;
+  durationFormatted?: unknown;
+  disposition?: unknown;
+  notes?: unknown;
+  [key: string]: unknown;
+};
+
+const BIZCALL_EVENTS = [
+  "BIZCALL_AGENT_REGISTERED",
+  "BIZCALL_CALL_STARTING",
+  "BIZCALL_CALL_CONNECTED",
+  "BIZCALL_CALL_ENDED",
+  "BIZCALL_DISPOSITION_SUBMITTED",
+] as const;
+type BizcallEventName = (typeof BIZCALL_EVENTS)[number];
+
+function isBizcallEventName(value: unknown): value is BizcallEventName {
+  return typeof value === "string" && (BIZCALL_EVENTS as readonly string[]).includes(value);
+}
 
 const LOCK_HEARTBEAT_MS = 2_000;
 const LOCK_STALE_MS = 5_000;
@@ -35,25 +76,42 @@ function safeText(value: unknown, limit: number) {
   return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, limit) : "";
 }
 
+function formatCallDuration(seconds: number) {
+  const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
+  const remainder = (seconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${remainder}`;
+}
+
 function dialpadUrlFor(config: DialpadConfig, userId: string) {
   return buildBizcallDialpadUrl(config.dialpadUrl, userId, config.theme);
 }
 
-function openDialpadTab(config: DialpadConfig, userId: string) {
-  return openBizcallDialpad(config.dialpadUrl, userId, config.theme, (url, target) => window.open(url, target));
+function openDialpadTab(config: DialpadConfig, userId: string, tenantId: string) {
+  return openBizcallDialpad(config.dialpadUrl, userId, tenantId, config.theme, (url, target) => window.open(url, target));
 }
 
 export function BizcallDialpadDock() {
   const pathname = usePathname();
-  const { user, isLoading, isAuthenticated, isAdmin, isSuperAdmin, hasEffectivePermission } = useAuth();
+  const { toast } = useToast();
+  const { user, tenant, isLoading, isAuthenticated, isAdmin, isSuperAdmin, hasEffectivePermission } = useAuth();
   const showOnPage = !pathname.startsWith("/setup") || pathname === "/setup/integrations/telephony";
   const allowed = hasEffectivePermission("TELEPHONY_CALL");
+  const impersonating = Boolean(user?.impersonatedBy || impersonationMeta());
+  const tenantId = tenant?.id || "";
   const [config, setConfig] = React.useState<DialpadConfig | null>(null);
   const [reasonCode, setReasonCode] = React.useState("NOT_CONFIGURED");
   const [secureTransport, setSecureTransport] = React.useState(true);
   const [expanded, setExpanded] = React.useState(false);
+  const [dockOpen, setDockOpen] = React.useState(true);
   const [online, setOnline] = React.useState(false);
   const [extension, setExtension] = React.useState("");
+  const [agentName, setAgentName] = React.useState("");
+  const [callNumber, setCallNumber] = React.useState("");
+  const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
+  const [endedSummary, setEndedSummary] = React.useState("");
+  const [disposition, setDisposition] = React.useState("");
+  const [dispositionNotes, setDispositionNotes] = React.useState("");
+  const [iframeLoaded, setIframeLoaded] = React.useState(false);
   const [callState, setCallState] = React.useState("Connecting");
   const [activeCall, setActiveCall] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
@@ -66,13 +124,52 @@ export function BizcallDialpadDock() {
   const [iframeGeneration, setIframeGeneration] = React.useState(0);
   const frameRef = React.useRef<HTMLIFrameElement>(null);
   const onlineRef = React.useRef(false);
+  const callInProgressRef = React.useRef(false);
+  const closeAfterHangupRef = React.useRef(false);
   const waiterRef = React.useRef<(() => void) | null>(null);
   const configRef = React.useRef<DialpadConfig | null>(null);
   const userIdRef = React.useRef(user?.id || "");
+  const activeCallRef = React.useRef<{
+    leadId: string;
+    leadName: string;
+    taskId?: string;
+    number: string;
+    callUuid?: string;
+    callDetailId?: string;
+  } | null>(null);
+  const queuedDialRef = React.useRef<DialerCommand | null>(null);
+  const activeCallTimerRef = React.useRef<number | null>(null);
   const tabIdRef = React.useRef("");
   const lockOwnerRef = React.useRef(false);
   const dockedDialpadUrl = config?.dialpadMode === "DOCKED" ? config.dialpadUrl : null;
   const lockEnabled = Boolean(config?.active && config.dialpadMode === "DOCKED");
+
+  const sendCommand = React.useCallback((command: DialerCommand, justLoaded = false) => {
+    if (command.type !== "BIZCALL_HANGUP" && (!allowed || impersonating)) {
+      return { ok: false, reason: "NO_PERMISSION" };
+    }
+    const result = sendDialerCommand(
+      frameRef.current?.contentWindow,
+      configRef.current?.dialpadOrigin || "",
+      iframeLoaded || justLoaded,
+      command,
+    );
+    if (result.ok && user?.id && tenantId) {
+      const { type, ...fields } = command;
+      recordDialpadMonitorEntry(tenantId, user.id, {
+        direction: "command",
+        name: type,
+        leadId: command.type === "DIAL" ? command.recordId : null,
+        fields,
+      });
+    }
+    return result;
+  }, [allowed, iframeLoaded, impersonating, tenantId, user?.id]);
+
+  const sendCommandRef = React.useRef(sendCommand);
+  sendCommandRef.current = sendCommand;
+
+  React.useEffect(() => registerDialerCommandHandler(sendCommand), [sendCommand]);
 
   React.useEffect(() => {
     onlineRef.current = online;
@@ -86,15 +183,70 @@ export function BizcallDialpadDock() {
 
   React.useEffect(() => {
     setTelephonyStatus(
-      Boolean(isAuthenticated && allowed && config?.active),
-      !isAuthenticated ? "NOT_CONFIGURED" : !allowed ? "NO_PERMISSION" : config?.active ? "ACTIVE" : reasonCode,
+      Boolean(isAuthenticated && allowed && config?.active && !impersonating),
+      impersonating ? "IMPERSONATING" : !isAuthenticated ? "NOT_CONFIGURED" : !allowed ? "NO_PERMISSION" : config?.active ? "ACTIVE" : reasonCode,
     );
-    setTelephonyNumberMasking(Boolean(isAuthenticated && allowed && config?.active && config.maskNumbers));
+    setTelephonyNumberMasking(Boolean(isAuthenticated && allowed && config?.active && !impersonating && config.maskNumbers));
     return () => {
       setTelephonyStatus(false, "NOT_CONFIGURED");
       setTelephonyNumberMasking(false);
     };
-  }, [allowed, config?.active, config?.maskNumbers, isAuthenticated, reasonCode]);
+  }, [allowed, config?.active, config?.maskNumbers, impersonating, isAuthenticated, reasonCode]);
+
+  React.useLayoutEffect(() => {
+    return () => {
+      if (callInProgressRef.current) sendCommandRef.current({ type: "BIZCALL_HANGUP" });
+      if (activeCallTimerRef.current !== null) window.clearInterval(activeCallTimerRef.current);
+      activeCallRef.current = null;
+      callInProgressRef.current = false;
+      closeAfterHangupRef.current = false;
+      queuedDialRef.current = null;
+    };
+  }, [allowed, config?.active, impersonating, isAuthenticated, tenantId, user?.id]);
+
+  React.useEffect(() => {
+    if (!isAuthenticated || impersonating || !user?.id || !tenantId) {
+      activeCallRef.current = null;
+      callInProgressRef.current = false;
+      closeAfterHangupRef.current = false;
+      queuedDialRef.current = null;
+      setActiveCall(false);
+      setCallNumber("");
+      setElapsedSeconds(0);
+      setEndedSummary("");
+      setDisposition("");
+      setDispositionNotes("");
+      setCallState("Connecting");
+      setIframeLoaded(false);
+      onlineRef.current = false;
+      setOnline(false);
+      return;
+    }
+    activeCallRef.current = null;
+    callInProgressRef.current = false;
+    closeAfterHangupRef.current = false;
+    queuedDialRef.current = null;
+    setActiveCall(false);
+    setCallNumber("");
+    setElapsedSeconds(0);
+    setEndedSummary("");
+    setDisposition("");
+    setDispositionNotes("");
+    setCallState("Connecting");
+    setIframeLoaded(false);
+    onlineRef.current = false;
+    setOnline(false);
+    setIframeGeneration((generation) => generation + 1);
+  }, [impersonating, isAuthenticated, tenantId, user?.id]);
+
+  React.useEffect(() => {
+    if (!activeCall || callState !== "Connected") return;
+    activeCallTimerRef.current = window.setInterval(() => setElapsedSeconds((value) => value + 1), 1000);
+    return () => {
+      if (activeCallTimerRef.current !== null) window.clearInterval(activeCallTimerRef.current);
+      activeCallTimerRef.current = null;
+    };
+  }, [activeCall, callState]);
 
   React.useEffect(() => {
     if (typeof window !== "undefined") {
@@ -147,14 +299,14 @@ export function BizcallDialpadDock() {
   }, [isAuthenticated, isLoading]);
 
   React.useEffect(() => {
-    if (!lockEnabled || !user?.id || !showOnPage) {
+    if (!lockEnabled || !user?.id || !tenantId || !showOnPage || impersonating) {
       setOwnsLock(false);
       setOtherTab(false);
       return;
     }
-    const key = `bizcall-dialpad-lock:${user.id}`;
+    const key = buildBizcallNamespaceKey(tenantId, user.id, "lock");
     const tabId = tabIdRef.current || (tabIdRef.current = `${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(`bizcall-dialpad:${user.id}`) : null;
+    const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(buildBizcallNamespaceKey(tenantId, user.id, "channel")) : null;
     const setOwnership = (owns: boolean) => {
       lockOwnerRef.current = owns;
       setOwnsLock(owns);
@@ -223,7 +375,7 @@ export function BizcallDialpadDock() {
       channel?.close();
       lockOwnerRef.current = false;
     };
-  }, [lockEnabled, showOnPage, user?.id]);
+  }, [impersonating, lockEnabled, showOnPage, tenantId, user?.id]);
 
   React.useEffect(() => {
     if (!dockedDialpadUrl || !ownsLock || !showOnPage) return;
@@ -239,24 +391,32 @@ export function BizcallDialpadDock() {
     return () => window.clearTimeout(timer);
   }, [dockedDialpadUrl, iframeGeneration, ownsLock, showOnPage]);
 
-  const waitUntilOnline = React.useCallback(async () => {
-    if (onlineRef.current) return true;
+  const queueDialUntilRegistered = React.useCallback(async (command: DialerCommand) => {
+    if (command.type !== "DIAL") return false;
+    if (onlineRef.current && iframeLoaded) return sendCommand(command).ok;
+    queuedDialRef.current = command;
     return new Promise<boolean>((resolve) => {
       const timeout = window.setTimeout(() => {
+        queuedDialRef.current = null;
         waiterRef.current = null;
+        setStatusMessage("The dialpad is connecting. Try again when it shows ONLINE.");
         resolve(false);
       }, 5000);
       waiterRef.current = () => {
         window.clearTimeout(timeout);
         waiterRef.current = null;
-        resolve(true);
+        const queued = queuedDialRef.current;
+        queuedDialRef.current = null;
+        resolve(queued?.type === "DIAL" && sendCommand(queued).ok);
       };
     });
-  }, []);
+  }, [iframeLoaded, sendCommand]);
 
   const placeRequest = React.useCallback(async (request: DialRequest): Promise<ClickToCallOutcome> => {
     const currentConfig = configRef.current;
     if (!currentConfig?.active) return outcome(false, "TELEPHONY_NOT_CONFIGURED", "Telephony is not active for this company.");
+    if (impersonating) return outcome(false, "IMPERSONATION_DISABLED", "Calls are disabled while viewing as another user.");
+    if (!allowed) return outcome(false, "NO_PERMISSION", "Telephony permission is required.");
     if (activeCall && !window.confirm("A call may still be in progress. Start another call anyway?")) {
       return outcome(false, "CALL_IN_PROGRESS", "The current call is still in progress.");
     }
@@ -271,7 +431,7 @@ export function BizcallDialpadDock() {
     setExpanded(true);
     setStatusMessage("");
     if (currentConfig.dialpadMode === "NEW_TAB") {
-      openDialpadTab(currentConfig, userIdRef.current);
+      openDialpadTab(currentConfig, userIdRef.current, tenantId);
     }
     if (currentConfig.callMethod === "SERVER_API") {
       if (currentConfig.dialpadMode === "DOCKED" && (!onlineRef.current || blocked)) {
@@ -289,28 +449,38 @@ export function BizcallDialpadDock() {
       return result;
     }
     setBusy(true);
-    const isOnline = await waitUntilOnline();
-    if (!isOnline) {
-      setBusy(false);
-      setBlocked(true);
-      setCallState("Blocked");
-      return outcome(false, "DIALPAD_BLOCKED", "Bizcall did not allow this site to embed the dialpad. Open the dialpad in a new tab or ask Bizcall to allow this CRM origin.");
-    }
     try {
       const response = await clickToCallApi.dialpadCallStarted({ leadId: request.leadId, phoneField: request.phoneField });
       const data = response.data.data as { callDetailId: string; leadId: string; leadName: string; dialNumber: string };
-      const target = frameRef.current?.contentWindow;
-      if (!target || !data.dialNumber) {
+      if (!data.dialNumber || !/^\+[1-9]\d{1,14}$/.test(data.dialNumber)) {
         setBusy(false);
-        return outcome(false, "DIALPAD_NOT_READY", "The dialpad is not ready to place this call.");
+        return outcome(false, "INVALID_PHONE", "The lead does not have a valid E.164 phone number.");
       }
-      target.postMessage({
+      activeCallRef.current = {
+        leadId: data.leadId,
+        leadName: safeText(data.leadName || request.leadName, 200),
+        taskId: request.taskId,
+        number: data.dialNumber,
+        callDetailId: data.callDetailId,
+      };
+      setCallNumber(data.dialNumber);
+      setEndedSummary("");
+      setElapsedSeconds(0);
+      const command: DialerCommand = {
         type: "DIAL",
         number: data.dialNumber,
         recordId: data.leadId,
         leadName: safeText(data.leadName || request.leadName, 200),
-      }, currentConfig.dialpadOrigin);
+        ...(request.taskId ? { taskId: request.taskId } : {}),
+        ...(currentConfig.sendTenantIdInDial && tenantId ? { tenantId } : {}),
+      };
+      const sent = await queueDialUntilRegistered(command);
+      if (!sent) {
+        setBusy(false);
+        return outcome(false, "DIALPAD_CONNECTING", "The dialpad is connecting. Try again when it shows ONLINE.", "blocked_before_send", data.callDetailId);
+      }
       setActiveCall(true);
+      setCallState("Calling");
       window.dispatchEvent(new CustomEvent("crm:call-details-updated", { detail: { leadId: request.leadId } }));
       setBusy(false);
       return outcome(true, "INITIATED", "Calling through the Bizcall dialpad.", "sent_to_provider", data.callDetailId);
@@ -319,7 +489,7 @@ export function BizcallDialpadDock() {
       const body = (error as { response?: { data?: { message?: string } } })?.response?.data;
       return outcome(false, "DIALPAD_CALL_FAILED", body?.message || "The call could not be started.");
     }
-  }, [activeCall, blocked, ownsLock, waitUntilOnline]);
+  }, [activeCall, allowed, blocked, impersonating, ownsLock, queueDialUntilRegistered, tenantId]);
 
   React.useEffect(() => registerTelephonyDialHandler(placeRequest), [placeRequest]);
 
@@ -328,41 +498,149 @@ export function BizcallDialpadDock() {
     if (!currentConfig || !frameRef.current || !ownsLock || blocked || !showOnPage) return;
     const frameWindow = frameRef.current.contentWindow;
     const onMessage = (event: MessageEvent<MessageData>) => {
-      if (!isTrustedBizcallMessage(event.origin, event.source, currentConfig.dialpadOrigin, frameWindow) || !event.data || typeof event.data.type !== "string") return;
+      if (!isTrustedBizcallMessage(event.origin, event.source, currentConfig.dialpadOrigin, frameWindow) || !event.data) return;
       const message = event.data;
-      if (message.type === "BIZCALL_AGENT_REGISTERED") {
+      const eventName = message.type;
+      if (!isBizcallEventName(eventName)) return;
+      let context = activeCallRef.current;
+      if (eventName === "BIZCALL_CALL_STARTING" && (!context || callState === "Ended")) {
+        context = {
+          leadId: "",
+          leadName: safeText(message.leadName, 200),
+          number: typeof message.number === "string" ? message.number : "",
+        };
+        activeCallRef.current = context;
+      }
+      const rawNumber = typeof message.number === "string" && /^\+[1-9]\d{1,14}$/.test(message.number)
+        ? message.number
+        : context?.number || "";
+      const rawDuration = typeof message.duration === "number" && Number.isFinite(message.duration)
+        ? Math.max(0, Math.min(86_400, Math.floor(message.duration)))
+        : undefined;
+      const rawNotes = safeText(message.notes, 2000);
+      const safeDisposition = safeText(message.disposition, 120);
+      const safeCallUuid = safeText(message.callUuid, 255) || context?.callUuid || "";
+      const safeRawFields = sanitizeDialpadFields(
+        Object.fromEntries(Object.entries(message).filter(([key]) => key !== "type")),
+      );
+      const normalizedEvent = {
+        event: eventName,
+        receivedAt: new Date().toISOString(),
+        tenantId,
+        userId: user?.id || "",
+        leadId: context?.leadId || null,
+        callUuid: safeCallUuid || null,
+        number: rawNumber ? maskDialpadNumber(rawNumber) : null,
+        duration: rawDuration ?? null,
+        disposition: safeDisposition || null,
+        notes: rawNotes || null,
+        rawFields: safeRawFields,
+      };
+      window.dispatchEvent(new CustomEvent("crm:bizcall-event", { detail: normalizedEvent }));
+      if (tenantId && user?.id) {
+        recordDialpadMonitorEntry(tenantId, user.id, {
+          direction: "event",
+          name: eventName,
+          leadId: context?.leadId || null,
+          fields: {
+            ...normalizedEvent,
+            notes: rawNotes ? "[redacted]" : "",
+            ...Object.fromEntries(Object.entries(safeRawFields).map(([key, value]) => [`raw_${key}`, value])),
+          },
+        });
+      }
+
+      if (eventName === "BIZCALL_AGENT_REGISTERED") {
         onlineRef.current = true;
         setOnline(true);
         setBlocked(false);
         setCallState("ONLINE");
         setExtension(safeText(message.extension, 40));
+        setAgentName(safeText(message.name, 120));
         setStatusMessage("");
-        waiterRef.current?.();
-        return;
+        if (queuedDialRef.current) waiterRef.current?.();
       }
-      const type = safeText(message.type, 80);
-      if (!["BIZCALL_CALL_STARTING", "BIZCALL_CALL_CONNECTED", "BIZCALL_CALL_ENDED", "BIZCALL_DISPOSITION_SUBMITTED"].includes(type)) return;
-      const request = pendingRequest;
-      if (!request) return;
-      if (type === "BIZCALL_CALL_STARTING") { setCallState("Calling"); setActiveCall(true); }
-      if (type === "BIZCALL_CALL_CONNECTED") { setCallState("Connected"); setActiveCall(true); }
-      if (type === "BIZCALL_CALL_ENDED") { setCallState("ONLINE"); setActiveCall(false); }
-      void clickToCallApi.dialpadEvent({
-        callUuid: safeText(message.callUuid, 255) || undefined,
-        leadId: request.leadId,
-        type,
-        duration: typeof message.duration === "number" && Number.isFinite(message.duration) ? Math.max(0, Math.min(86_400, Math.floor(message.duration))) : undefined,
-        disposition: safeText(message.disposition, 120) || undefined,
-        notes: safeText(message.notes, 2000) || undefined,
-      }).then(() => window.dispatchEvent(new CustomEvent("crm:call-details-updated", { detail: { leadId: request.leadId } })))
-        .catch(() => setStatusMessage("Call event could not be saved. Refresh Call Details and try again."));
+      if (eventName === "BIZCALL_CALL_STARTING") {
+        setElapsedSeconds(0);
+        setEndedSummary("");
+        setDisposition("");
+        setDispositionNotes("");
+        if (!activeCallRef.current && rawNumber) {
+          activeCallRef.current = {
+            leadId: "",
+            leadName: safeText(message.leadName, 200),
+            number: rawNumber,
+            ...(safeCallUuid ? { callUuid: safeCallUuid } : {}),
+          };
+        }
+        setCallNumber(rawNumber);
+        setCallState("Calling");
+        setActiveCall(true);
+        callInProgressRef.current = true;
+      } else if (eventName === "BIZCALL_CALL_CONNECTED") {
+        if (activeCallRef.current && safeCallUuid) activeCallRef.current.callUuid = safeCallUuid;
+        setCallNumber(rawNumber);
+        setCallState("Connected");
+        setActiveCall(true);
+        callInProgressRef.current = true;
+      } else if (eventName === "BIZCALL_CALL_ENDED") {
+        if (activeCallTimerRef.current !== null) window.clearInterval(activeCallTimerRef.current);
+        activeCallTimerRef.current = null;
+        setElapsedSeconds(rawDuration || 0);
+        setCallState("Ended");
+        setActiveCall(false);
+        callInProgressRef.current = false;
+        const formatted = safeText(message.durationFormatted, 32) || formatCallDuration(rawDuration || 0);
+        setEndedSummary(`${formatted}${context?.leadName ? ` · ${context.leadName}` : ""}`);
+        if (closeAfterHangupRef.current) {
+          closeAfterHangupRef.current = false;
+          setIframeLoaded(false);
+          setDockOpen(false);
+        }
+      } else if (eventName === "BIZCALL_DISPOSITION_SUBMITTED") {
+        setDisposition(safeDisposition);
+        setDispositionNotes(rawNotes);
+        setStatusMessage("Disposition saved");
+        toast({ title: "Disposition saved" });
+        window.setTimeout(() => setStatusMessage((value) => value === "Disposition saved" ? "" : value), 3000);
+      }
+
+      if (eventName !== "BIZCALL_AGENT_REGISTERED") {
+        const body = {
+          event: eventName,
+          ...(context?.leadId ? { leadId: context.leadId } : {}),
+          ...(safeCallUuid ? { callUuid: safeCallUuid } : {}),
+          ...(rawNumber ? { number: rawNumber } : {}),
+          ...(rawDuration !== undefined ? { duration: rawDuration } : {}),
+          ...(typeof message.durationFormatted === "string" ? { durationFormatted: safeText(message.durationFormatted, 32) } : {}),
+          ...(safeDisposition ? { disposition: safeDisposition } : {}),
+          ...(rawNotes ? { notes: rawNotes } : {}),
+        };
+        void clickToCallApi.dialpadEvent(body)
+          .then(() => {
+            if (context?.leadId) window.dispatchEvent(new CustomEvent("crm:call-details-updated", { detail: { leadId: context.leadId } }));
+            if (eventName === "BIZCALL_DISPOSITION_SUBMITTED") activeCallRef.current = null;
+          })
+          .catch(() => setStatusMessage("Call event could not be saved. Refresh Call Details and try again."));
+      } else {
+        void clickToCallApi.dialpadEvent({
+          event: eventName,
+          name: safeText(message.name, 120),
+          extension: safeText(message.extension, 40),
+        }).catch(() => setStatusMessage("Dialpad registration could not be recorded."));
+      }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [blocked, config, iframeGeneration, ownsLock, pendingRequest, showOnPage]);
+  }, [blocked, callState, config, iframeGeneration, ownsLock, pendingRequest, showOnPage, tenantId, toast, user?.id]);
 
   const resetDialpad = () => {
+    if (activeCall) {
+      setStatusMessage("End the active call before reloading the dialpad.");
+      return;
+    }
     onlineRef.current = false;
+    setIframeLoaded(false);
     setOnline(false);
     setBlocked(false);
     setCallState("Connecting");
@@ -371,12 +649,12 @@ export function BizcallDialpadDock() {
   };
 
   const takeOverHere = () => {
-    if (!user?.id) return;
+    if (!user?.id || !tenantId) return;
     setTakingOver(true);
     setExpanded(true);
-    const key = `bizcall-dialpad-lock:${user.id}`;
+    const key = buildBizcallNamespaceKey(tenantId, user.id, "lock");
     try {
-      const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(`bizcall-dialpad:${user.id}`) : null;
+      const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(buildBizcallNamespaceKey(tenantId, user.id, "channel")) : null;
       channel?.postMessage({ type: "takeover", requesterId: tabIdRef.current });
       const acquired = claimDialpadLock(localStorage, key, tabIdRef.current, Date.now(), LOCK_STALE_MS);
       lockOwnerRef.current = acquired;
@@ -409,7 +687,11 @@ export function BizcallDialpadDock() {
     }
   };
 
-  if (isLoading || !isAuthenticated || !allowed || !config?.active || !showOnPage) return null;
+  if (isLoading || !isAuthenticated) return null;
+  if (impersonating) {
+    return <div role="status" className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border bg-background p-3 text-sm shadow-lg">Calls are disabled while viewing as another user.</div>;
+  }
+  if (!allowed || !config?.active || !showOnPage) return null;
   if (!secureTransport) {
     return (
       <div role="alert" className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-amber-400 bg-amber-50 p-3 text-sm text-amber-950 shadow-lg dark:bg-amber-950 dark:text-amber-100">
@@ -421,7 +703,7 @@ export function BizcallDialpadDock() {
     return (
       <div className="fixed bottom-4 right-4 z-40 rounded-lg border bg-background p-3 text-xs shadow-lg">
         <p>Keep the Bizcall dialpad tab open and allow the microphone.</p>
-        <Button className="mt-2" size="sm" onClick={() => openDialpadTab(config, user?.id || "")}>Open dialpad in a new tab</Button>
+        <Button className="mt-2" size="sm" onClick={() => openDialpadTab(config, user?.id || "", tenantId)}>Open dialpad in a new tab</Button>
       </div>
     );
   }
@@ -436,27 +718,87 @@ export function BizcallDialpadDock() {
   if (!ownsLock && config.dialpadMode === "DOCKED") {
     return <div className="fixed bottom-4 right-4 z-40 rounded-lg border bg-background px-3 py-2 text-sm shadow-lg">Connecting to the Bizcall dialpad…</div>;
   }
+  if (!dockOpen) {
+    return (
+      <Button type="button" className="fixed bottom-4 right-4 z-50 shadow-lg" onClick={() => {
+        setStatusMessage("");
+        setDockOpen(true);
+      }}>
+        Open Bizcall Dialpad
+      </Button>
+    );
+  }
 
   const dialpadUrl = dialpadUrlFor(config, user?.id || "");
   const crmOrigin = typeof window !== "undefined" ? window.location.origin : "";
+  const endCall = () => {
+    const result = sendCommand({ type: "BIZCALL_HANGUP" });
+    if (!result.ok) setStatusMessage("The dialpad is not ready to receive BIZCALL_HANGUP.");
+  };
+  const closeDock = () => {
+    if (activeCall && callInProgressRef.current && !window.confirm("End the active call and close the dialpad?")) return;
+    if (callInProgressRef.current) {
+      const result = sendCommand({ type: "BIZCALL_HANGUP" });
+      if (!result.ok) {
+        setStatusMessage("The dialpad is not ready to receive BIZCALL_HANGUP.");
+        return;
+      }
+      closeAfterHangupRef.current = true;
+      setStatusMessage("Ending the call before closing the dialpad…");
+      return;
+    }
+    if (activeCallTimerRef.current !== null) window.clearInterval(activeCallTimerRef.current);
+    activeCallTimerRef.current = null;
+    activeCallRef.current = null;
+    callInProgressRef.current = false;
+    closeAfterHangupRef.current = false;
+    queuedDialRef.current = null;
+    setActiveCall(false);
+    setCallNumber("");
+    setElapsedSeconds(0);
+    setIframeLoaded(false);
+    setOnline(false);
+    onlineRef.current = false;
+    setExpanded(false);
+    setDockOpen(false);
+  };
 
   return (
     <aside className="fixed bottom-3 right-3 z-50 w-[min(360px,calc(100vw-1.5rem))] overflow-hidden rounded-xl border bg-background shadow-2xl md:bottom-4 md:right-4">
       <header className="flex items-center justify-between border-b px-3 py-2">
-        <div className="flex items-center gap-2 text-sm font-medium">
+        <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
           <span className={`h-2 w-2 rounded-full ${online ? "bg-emerald-500" : "bg-slate-400"}`} />
           <span>Bizcall Dialpad</span>
-          <span className="text-xs font-normal text-muted-foreground">{extension ? `· ${extension} · ${callState}` : `· ${callState}`}</span>
+          <span className="truncate text-xs font-normal text-muted-foreground">
+            {[agentName, extension, callState, activeCall && callState === "Connected" ? formatCallDuration(elapsedSeconds) : ""].filter(Boolean).join(" · ")}
+          </span>
         </div>
         <div className="flex gap-1">
+          {config.callMethod === "DIALPAD_MESSAGE" && activeCall && (callState === "Calling" || callState === "Connected") && (
+            <Button type="button" variant="outline" size="sm" onClick={endCall}>End call</Button>
+          )}
           <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={expanded ? "Minimize dialpad" : "Expand dialpad"} onClick={() => setExpanded((value) => !value)}>
             <Phone className="h-4 w-4" />
           </Button>
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label="Reload dialpad" onClick={resetDialpad}>
+          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label="Reload dialpad" disabled={activeCall} onClick={resetDialpad}>
             <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-red-600 hover:bg-red-50 hover:text-red-700" aria-label="Close dialpad and end call" onClick={closeDock}>
+            <X className="h-4 w-4" />
           </Button>
         </div>
       </header>
+      {(callState === "Calling" || callState === "Connected") && callNumber && (
+        <div className="border-b px-3 py-2 text-xs text-muted-foreground">
+          {callState} · {maskDialpadNumber(callNumber)}{activeCallRef.current?.leadName ? ` · ${activeCallRef.current.leadName}` : ""}
+        </div>
+      )}
+      {endedSummary && <div className="border-b bg-slate-50 px-3 py-2 text-xs dark:bg-slate-800">Call ended · {endedSummary}</div>}
+      {disposition && (
+        <div className="border-b px-3 py-2 text-xs text-muted-foreground">
+          Disposition saved · {disposition}{dispositionNotes ? " · Notes saved" : ""}
+        </div>
+      )}
       <div className={expanded ? "block" : "h-0 overflow-hidden"}>
         {statusMessage ? <div className="bg-amber-50 px-3 py-2 text-xs text-amber-900">{statusMessage}</div> : null}
         {busy ? <p className="px-3 py-1 text-xs text-muted-foreground">Preparing call…</p> : null}
@@ -464,11 +806,11 @@ export function BizcallDialpadDock() {
           <div className="space-y-3 p-4 text-sm">
             <p className="font-medium">Bizcall did not allow this site to embed the dialpad.</p>
             {(isAdmin || isSuperAdmin) && crmOrigin ? <p className="break-all text-muted-foreground">Ask Bizcall to allow this origin in frame-ancestors: <code>{crmOrigin}</code></p> : null}
-            <Button className="w-full" onClick={() => openDialpadTab(config, user?.id || "")}>Open dialpad in a new tab</Button>
+            <Button className="w-full" onClick={() => openDialpadTab(config, user?.id || "", tenantId)}>Open dialpad in a new tab</Button>
           </div>
         ) : (
           <iframe
-            key={iframeGeneration}
+            key={`${iframeGeneration}:${tenantId}:${user?.id || ""}`}
             ref={frameRef}
             id={BIZCALL_DIALPAD_WINDOW_NAME}
             src={dialpadUrl}
@@ -477,7 +819,12 @@ export function BizcallDialpadDock() {
             width={360}
             height={620}
             className="h-[min(620px,calc(100dvh-6rem))] w-full border-0"
+            onLoad={() => {
+              setIframeLoaded(true);
+              if (user?.id) sendCommandRef.current({ type: "INIT_USER", userId: user.id }, true);
+            }}
             onError={() => {
+              setIframeLoaded(false);
               onlineRef.current = false;
               setOnline(false);
               setBlocked(true);

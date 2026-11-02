@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { ClickToCallField, ClickToCallOutcome } from "@/lib/click-to-call";
+import type { DialerCommand } from "@/lib/bizcall-dialpad";
 
 type DialRequest = {
   leadId: string;
@@ -8,8 +9,10 @@ type DialRequest = {
 };
 
 type DialHandler = (request: DialRequest) => Promise<ClickToCallOutcome>;
+type DialerCommandHandler = (command: DialerCommand) => { ok: boolean; reason?: string };
 
 let dialHandler: DialHandler | null = null;
+let dialerCommandHandler: DialerCommandHandler | null = null;
 let telephonyIsActive = false;
 let telephonyReasonCode = "NOT_CONFIGURED";
 let shouldMaskNumbers = false;
@@ -20,6 +23,18 @@ export function registerTelephonyDialHandler(handler: DialHandler) {
   return () => {
     if (dialHandler === handler) dialHandler = null;
   };
+}
+
+export function registerDialerCommandHandler(handler: DialerCommandHandler) {
+  dialerCommandHandler = handler;
+  return () => {
+    if (dialerCommandHandler === handler) dialerCommandHandler = null;
+  };
+}
+
+export function requestDialerCommand(command: DialerCommand) {
+  if (!dialerCommandHandler) return { ok: false, reason: "DIALPAD_NOT_READY" };
+  return dialerCommandHandler(command);
 }
 
 export function requestLeadCall(request: DialRequest): Promise<ClickToCallOutcome> {

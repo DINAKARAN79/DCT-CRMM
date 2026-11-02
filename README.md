@@ -20,6 +20,36 @@ Enterprise Multi-Tenant CRM with dynamic object management, role-based access co
 - CRM workflow engine with status transitions
 - Audit logging and activity tracking
 
+## Super Admin platform reporting
+
+The independent platform reporting area is available at `/platform-reporting`
+for authenticated Super Admin users. It uses dedicated `/api/super-admin/reporting`
+endpoints and saved platform definitions; tenant dashboard and report settings
+do not control or grant access to this data.
+
+The registry is derived from the generated Prisma model metadata. It exposes
+platform-wide `Tenant` and `Permission` data plus eligible models with a direct
+`tenantId` ownership field. Sensitive/authentication models and fields, JSON and
+binary fields, and models without a safely enforceable tenant owner are omitted.
+Supported to-one relationships can be used as validated report filters; report
+selection uses fields on the selected object, and grouping also supports the
+validated tenant-name dimension for tenant-owned records.
+
+Reports support all-tenant or selected-tenant scope, filters, AND/OR filter
+groups, grouping, count/sum/average/min/max aggregates, sorting, pagination,
+saved CRUD operations, and CSV export for raw-record reports. Dashboard
+definitions are separate from tenant dashboards and contain reusable report
+widgets with saved query definitions, scope, ordering, and size settings.
+Tenant analytics currently compares per-company lead counts. Platform overview
+booking values and approved CRM payment collections are shown separately and by
+tenant currency; they are not combined into a single revenue figure.
+
+Apply the additive platform reporting migration before using these APIs:
+
+```bash
+npx prisma migrate deploy --schema packages/db/prisma/schema.prisma
+```
+
 ## Getting Started
 
 ```bash

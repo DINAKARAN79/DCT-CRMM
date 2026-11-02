@@ -270,6 +270,49 @@ export const presenceApi = {
   companyCounts: () => api.get<ApiResponse>('/api/super-admin/presence-counts'),
 };
 
+export const platformReportingApi = {
+  metricCards: () => api.get<ApiResponse>('/api/platform/metrics'),
+  metricSummary: (id: string, params?: Record<string, unknown>) =>
+    api.get<ApiResponse>(`/api/platform/metrics/${encodeURIComponent(id)}/summary`, { params }),
+  metricRecords: (id: string, params?: Record<string, unknown>) =>
+    api.get<ApiResponse>(`/api/platform/metrics/${encodeURIComponent(id)}/records`, { params }),
+  exportMetric: (id: string, format: 'csv' | 'xlsx', params?: Record<string, unknown>) =>
+    api.get<Blob>(`/api/platform/metrics/${encodeURIComponent(id)}/export.${format}`, { params, responseType: 'blob' }),
+  overview: () => api.get<ApiResponse>('/api/super-admin/reporting/overview'),
+  registry: () => api.get<ApiResponse>('/api/super-admin/reporting/registry'),
+  tenants: (params?: { page?: number; pageSize?: number; search?: string }) =>
+    api.get<ApiResponse>('/api/super-admin/reporting/tenants', { params }),
+  tenantAnalytics: (tenantIds?: string[]) =>
+    api.get<ApiResponse>('/api/super-admin/reporting/tenant-analytics', { params: tenantIds?.length ? { tenantIds: tenantIds.join(',') } : undefined }),
+  query: (definition: Record<string, unknown>) =>
+    api.post<ApiResponse>('/api/super-admin/reporting/query', definition),
+  reports: () => api.get<ApiResponse>('/api/super-admin/reporting/reports'),
+  createReport: (definition: Record<string, unknown>) =>
+    api.post<ApiResponse>('/api/super-admin/reporting/reports', definition),
+  report: (id: string) => api.get<ApiResponse>(`/api/super-admin/reporting/reports/${id}`),
+  updateReport: (id: string, definition: Record<string, unknown>) =>
+    api.put<ApiResponse>(`/api/super-admin/reporting/reports/${id}`, definition),
+  deleteReport: (id: string) => api.delete<ApiResponse>(`/api/super-admin/reporting/reports/${id}`),
+  duplicateReport: (id: string) =>
+    api.post<ApiResponse>(`/api/super-admin/reporting/reports/${id}/duplicate`),
+  runReport: (id: string) =>
+    api.post<ApiResponse>(`/api/super-admin/reporting/reports/${id}/run`),
+  exportReport: (id: string) =>
+    api.get<Blob>(`/api/super-admin/reporting/reports/${id}/export.csv`, { responseType: 'blob' }),
+  dashboards: () => api.get<ApiResponse>('/api/super-admin/reporting/dashboards'),
+  createDashboard: (definition: Record<string, unknown>) =>
+    api.post<ApiResponse>('/api/super-admin/reporting/dashboards', definition),
+  dashboard: (id: string) => api.get<ApiResponse>(`/api/super-admin/reporting/dashboards/${id}`),
+  updateDashboard: (id: string, definition: Record<string, unknown>) =>
+    api.put<ApiResponse>(`/api/super-admin/reporting/dashboards/${id}`, definition),
+  deleteDashboard: (id: string) =>
+    api.delete<ApiResponse>(`/api/super-admin/reporting/dashboards/${id}`),
+  duplicateDashboard: (id: string) =>
+    api.post<ApiResponse>(`/api/super-admin/reporting/dashboards/${id}/duplicate`),
+  runDashboard: (id: string, scope?: { mode: 'all' | 'selected'; tenantIds: string[] }) =>
+    api.post<ApiResponse>(`/api/super-admin/reporting/dashboards/${id}/run`, scope ? { scope } : {}),
+};
+
 export const impersonationApi = {
   exit: () => api.post<ApiResponse>('/api/impersonation/exit'),
   status: () => api.get<ApiResponse>('/api/impersonation/status'),
@@ -565,8 +608,8 @@ export const activityApi = {
 };
 
 export const callDetailsApi = {
-  list: (leadId: string) =>
-    api.get<ApiResponse>(`/api/call-details`, { params: { leadId } }),
+  list: (leadId?: string) =>
+    api.get<ApiResponse>(`/api/call-details`, { params: leadId ? { leadId } : undefined }),
   get: (id: string) =>
     api.get<ApiResponse>(`/api/call-details/${id}`),
   update: (id: string, data: Record<string, unknown>) =>
@@ -689,9 +732,20 @@ export const clickToCallApi = {
     api.post<ApiResponse>('/api/telephony/click-to-call', data),
   clientConfig: () =>
     api.get<ApiResponse>('/api/telephony/client-config'),
-  dialpadCallStarted: (data: { leadId: string; phoneField: 'phone' | 'mobile' | 'secondaryPhone' }) =>
+  dialpadCallStarted: (data: { leadId: string; phoneField: 'phone' | 'mobile' | 'secondaryPhone' } | { number: string }) =>
     api.post<ApiResponse>('/api/telephony/dialpad-call-started', data),
-  dialpadEvent: (data: Record<string, unknown>) =>
+  dialpadEvent: (data: {
+    event: 'BIZCALL_AGENT_REGISTERED' | 'BIZCALL_CALL_STARTING' | 'BIZCALL_CALL_CONNECTED' | 'BIZCALL_CALL_ENDED' | 'BIZCALL_DISPOSITION_SUBMITTED';
+    leadId?: string;
+    callUuid?: string;
+    number?: string;
+    duration?: number;
+    durationFormatted?: string;
+    disposition?: string;
+    notes?: string;
+    name?: string;
+    extension?: string;
+  }) =>
     api.post<ApiResponse>('/api/telephony/dialpad-event', data),
 };
 

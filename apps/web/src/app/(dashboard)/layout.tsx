@@ -51,6 +51,9 @@ function DashboardAccessGuard({ children }: { children: React.ReactNode }) {
   const isCustomizeHomeRoute =
     pathname === "/admin/customize-home" ||
     pathname.startsWith("/admin/customize-home/");
+  const isPlatformReportingRoute =
+    pathname === "/platform-reporting" ||
+    pathname.startsWith("/platform-reporting/");
   const isObjectManagerRoute =
     pathname === "/admin/object-manager" ||
     pathname.startsWith("/admin/object-manager/");
@@ -74,15 +77,18 @@ function DashboardAccessGuard({ children }: { children: React.ReactNode }) {
       router.replace("/home");
     } else if (!isLoading && isCustomizeHomeRoute && !isAdmin && !isSuperAdmin) {
       router.replace("/home");
+    } else if (!isLoading && isPlatformReportingRoute && !isSuperAdmin) {
+      router.replace("/home");
     } else if (!isLoading && isRestrictedAdminRoute) {
       router.replace("/home");
     }
-  }, [hasEffectivePermission, hasFullAccess, isAdmin, isLoading, isAuthenticated, isSuperAdmin, isCustomizeHomeRoute, isRestrictedAdminRoute, pathname, requiredPermission, router]);
+  }, [hasEffectivePermission, hasFullAccess, isAdmin, isLoading, isAuthenticated, isSuperAdmin, isCustomizeHomeRoute, isPlatformReportingRoute, isRestrictedAdminRoute, pathname, requiredPermission, router]);
 
   if (isLoading || !isAuthenticated) return null;
   if (requiredPermission && !(isSuperAdmin || hasFullAccess || hasEffectivePermission(requiredPermission))) return null;
   if (pathname.startsWith("/setup") && !isAdmin && !isSuperAdmin) return null;
   if (isCustomizeHomeRoute && !isAdmin && !isSuperAdmin) return null;
+  if (isPlatformReportingRoute && !isSuperAdmin) return null;
   if (isRestrictedAdminRoute) return null;
   return <>{children}</>;
 }
@@ -107,8 +113,6 @@ function DashboardShell({
     pathname.startsWith("/reports/") ||
     pathname.startsWith("/profiles") ||
     (Boolean(pathRoot) && !knownRoots.has(pathRoot));
-  const standaloneReport =
-    pathname.startsWith("/reports/") && pathname !== "/reports/new";
   const embedded = searchParams.get("embed") === "1";
   const companiesApiConsole = pathname === "/admin/companies" && searchParams.get("view") === "api";
 
@@ -126,28 +130,12 @@ function DashboardShell({
     );
   }
 
-  if (standaloneReport) {
-    return (
-      <AuthProvider>
-        <div className="min-h-screen min-w-0 max-w-full bg-background">
-          <div className="p-4 pb-0"><ImpersonationBanner /><PhoneRequiredBanner /></div>
-          <DashboardAccessGuard>
-            <React.Suspense fallback={<div className="min-h-screen" aria-hidden="true" />}>
-              {children}
-            </React.Suspense>
-          </DashboardAccessGuard>
-          <Toaster />
-        </div>
-      </AuthProvider>
-    );
-  }
-
   return (
     <AuthProvider>
       <BreadcrumbLabels>
-      <div className={`${companiesApiConsole ? "min-h-screen lg:h-dvh lg:overflow-hidden" : "min-h-screen"} min-w-0 max-w-full bg-background`}>
+      <div className={`dashboard-shell ${companiesApiConsole ? "min-h-screen lg:h-dvh lg:overflow-hidden" : "min-h-screen"} min-w-0 max-w-full bg-background`}>
         <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-        <div className={`${companiesApiConsole ? "lg:flex lg:h-full lg:min-h-0 lg:flex-col" : ""} min-w-0 max-w-full overflow-x-clip lg:pl-14`}>
+        <div className={`dashboard-main ${companiesApiConsole ? "lg:flex lg:h-full lg:min-h-0 lg:flex-col" : ""} min-w-0 max-w-full overflow-x-clip lg:pl-14`}>
           <React.Suspense fallback={<div className="h-14" aria-hidden="true" />}>
             <Header onMenuClick={() => setSidebarOpen(true)} />
           </React.Suspense>

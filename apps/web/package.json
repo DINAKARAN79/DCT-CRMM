@@ -44,7 +44,8 @@
     "react-leaflet": "^4.2.1",
     "react-rnd": "^10.5.3",
     "recharts": "^3.10.1",
-    "tailwind-merge": "^2.3.0"
+    "tailwind-merge": "^2.3.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^7.0.1",

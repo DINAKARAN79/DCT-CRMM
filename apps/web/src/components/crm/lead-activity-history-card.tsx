@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { BOOKING_DETAIL_FIELDS } from "@dct-crm/shared";
 import { CheckCircle2, ChevronDown, History, Loader2, RefreshCw } from "lucide-react";
 import { bookingApi, leadApi } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
@@ -38,7 +39,7 @@ interface ActivityEntry {
   feedType?: string;
 }
 
-interface HistoryEntry {
+export interface HistoryEntry {
   id: string;
   action: string;
   objectType?: string;
@@ -85,6 +86,8 @@ function formatDateTime(value?: string | null, includeYear = false): string | nu
 }
 
 function fieldLabel(field: string): string {
+  const bookingField = BOOKING_DETAIL_FIELDS.find((entry) => entry.name === field);
+  if (bookingField) return bookingField.label;
   return field
     .replace(/Id$/, "")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -128,9 +131,36 @@ function activityDetailRows(activity: ActivityEntry, userName: string): DetailRo
   return rows;
 }
 
-function historyDetailRows(entry: HistoryEntry, getLeadStatusLabel: (status: string) => string): DetailRow[] {
+export function historyDetailRows(entry: HistoryEntry, getLeadStatusLabel: (status: string) => string): DetailRow[] {
   const oldValues = entry.oldValues || {};
   const newValues = entry.newValues || {};
+  const changes = newValues.changes;
+  if (entry.objectType === "Booking" && Array.isArray(changes)) {
+    return changes.flatMap((change) => {
+      if (!change || typeof change !== "object") return [];
+      const item = change as { field?: unknown; label?: unknown; oldValue?: unknown; newValue?: unknown };
+      if (typeof item.field !== "string") return [];
+      const label = typeof item.label === "string" ? item.label : fieldLabel(item.field);
+      const format = (value: unknown) => {
+        if (typeof value === "string" && /(At|Date)$/.test(item.field as string)) {
+          return formatDateTime(value, true) || displayValue(value).replace(/_/g, " ");
+        }
+        return displayValue(value).replace(/_/g, " ");
+      };
+      return [{
+        label,
+        value: `${format(item.oldValue)} → ${format(item.newValue)}`,
+      }];
+    });
+  }
+  if (entry.objectType === "Booking" && Array.isArray(newValues.updatedFields)) {
+    return newValues.updatedFields
+      .filter((field): field is string => typeof field === "string")
+      .map((field) => ({
+        label: fieldLabel(field),
+        value: "Updated; previous and new values were not recorded.",
+      }));
+  }
   const ignoredFields = new Set([
     "id", "tenantId", "leadId", "createdAt", "updatedAt", "creatorId", "cancelledById", "completedById",
     "bookingId",
@@ -161,8 +191,42 @@ function historyDetailRows(entry: HistoryEntry, getLeadStatusLabel: (status: str
     });
 }
 
-function historyDescription(entry: HistoryEntry, getLeadStatusLabel: (status: string) => string): string {
+export function historyDescription(entry: HistoryEntry, getLeadStatusLabel: (status: string) => string): string {
   const recordLabel = entry.objectType === "Booking" ? "Booking" : "Lead";
+  const process = bookingProcess(entry);
+  if (process === "created") return "Booking was created from a confirmed quotation and its unit was reserved.";
+  if (process === "details") {
+    const changes = entry.newValues?.changes;
+    const fields = Array.isArray(changes)
+      ? changes.flatMap((change) => change && typeof change === "object" && "label" in change && typeof change.label === "string" ? [change.label] : [])
+      : Array.isArray(entry.newValues?.updatedFields)
+        ? entry.newValues.updatedFields.filter((field): field is string => typeof field === "string").map(fieldLabel)
+        : [];
+    return fields.length
+      ? `Changed booking information: ${fields.join(", ")}.`
+      : "Booking information was saved; field-level changes were not recorded.";
+  }
+  if (process === "stage") {
+    const from = entry.oldValues?.bookingStage;
+    const to = entry.newValues?.bookingStage;
+    return from !== undefined && to !== undefined
+      ? `Booking stage changed from ${displayValue(from).replace(/_/g, " ")} to ${displayValue(to).replace(/_/g, " ")}.`
+      : "Booking stage was changed.";
+  }
+  if (process === "cancellation-requested") {
+    const reason = entry.newValues?.cancellationReason;
+    return typeof reason === "string" && reason.trim()
+      ? `Cancellation requested for MIS review. Reason: ${reason}`
+      : "Cancellation request was sent to MIS for review.";
+  }
+  if (process === "cancellation-approved") return "MIS approved the cancellation; the booking was cancelled and its unit released.";
+  if (process === "cancellation-rejected") {
+    const note = entry.newValues?.reviewNote;
+    return typeof note === "string" && note.trim()
+      ? `MIS rejected the cancellation request. Note: ${note}`
+      : "MIS rejected the cancellation request.";
+  }
+  if (process === "welcome-call") return "Welcome call completed after payment verification; booking confirmed and unit marked booked.";
   if (entry.action === "CREATE") return `${recordLabel} is created.`;
   if (entry.objectType === "Booking" && entry.action === "STATUS_CHANGE") return "Booking status was updated.";
   if (entry.objectType === "Booking" && entry.action === "UPDATE") return "Booking details were updated.";
@@ -232,11 +296,50 @@ function timelineTitle(title: string): string {
   return title;
 }
 
-function historyTitle(entry: HistoryEntry): string {
+function bookingProcess(entry: HistoryEntry): string | null {
+  if (entry.objectType !== "Booking") return null;
+  if (entry.action === "BOOKING_CREATED" || entry.action === "CREATE") return "created";
+  if (entry.action === "BOOKING_DETAILS_UPDATED") return "details";
+  if (entry.action === "BOOKING_STAGE_CHANGED") return "stage";
+  if (entry.action === "BOOKING_CANCELLATION_REQUESTED") return "cancellation-requested";
+  if (entry.action === "BOOKING_CANCELLATION_APPROVED") return "cancellation-approved";
+  if (entry.action === "BOOKING_CANCELLATION_REJECTED") return "cancellation-rejected";
+  if (entry.action === "BOOKING_WELCOME_CALL_COMPLETED") return "welcome-call";
+  if (entry.action !== "UPDATE") return null;
+
+  const values = entry.newValues || {};
+  if ("bookingStage" in values) return "stage";
+  if ("cancellationStatus" in values) {
+    if (values.cancellationStatus === "PENDING") return "cancellation-requested";
+    if (values.cancellationStatus === "APPROVED") return "cancellation-approved";
+    if (values.cancellationStatus === "REJECTED") return "cancellation-rejected";
+  }
+  if ("welcomeCallCompletedAt" in values) return "welcome-call";
+  if (Array.isArray(values.changes) || Array.isArray(values.updatedFields)) return "details";
+  return null;
+}
+
+function bookingWorkflowActivityPattern(process: string | null): RegExp | null {
+  if (process === "stage") return /booking status updated/i;
+  if (process === "cancellation-requested") return /booking cancellation requested/i;
+  if (process === "cancellation-approved") return /booking cancelled by mis/i;
+  if (process === "cancellation-rejected") return /booking cancellation rejected by mis/i;
+  if (process === "welcome-call") return /welcome call completed/i;
+  return null;
+}
+
+export function historyTitle(entry: HistoryEntry): string {
   if (entry.objectType === "Booking") {
-    if (entry.action === "CREATE") return "Booking Created";
+    const process = bookingProcess(entry);
+    if (process === "created") return "Booking Created";
+    if (process === "details") return "Booking Details Updated";
+    if (process === "stage") return "Booking Stage Changed";
+    if (process === "cancellation-requested") return "Booking Cancellation Requested";
+    if (process === "cancellation-approved") return "Booking Cancellation Approved";
+    if (process === "cancellation-rejected") return "Booking Cancellation Rejected";
+    if (process === "welcome-call") return "Welcome Call Completed";
     if (entry.action === "STATUS_CHANGE") return "Booking Status Updated";
-    if (entry.action === "UPDATE") return "Booking Updated";
+    if (entry.action === "UPDATE") return "Booking Record Updated";
   }
   const knownTitles: Record<string, string> = {
     CREATE: "Lead Created",
@@ -283,6 +386,14 @@ function actorSummary(entry: FeedEntry, userName: string): string {
   }
   if (entry.history.action === "TASK_CREATED") return `${userName} had a task`;
   if (entry.history.action === "FOLLOW_UP_CREATED") return `${userName} had a follow-up`;
+  const process = bookingProcess(entry.history);
+  if (process === "created") return `${userName} created this booking`;
+  if (process === "details") return `${userName} changed booking information`;
+  if (process === "stage") return `${userName} changed the booking stage`;
+  if (process === "cancellation-requested") return `${userName} requested booking cancellation`;
+  if (process === "cancellation-approved") return `${userName} approved booking cancellation`;
+  if (process === "cancellation-rejected") return `${userName} rejected booking cancellation`;
+  if (process === "welcome-call") return `${userName} completed the welcome call`;
   return `${userName} updated this ${entry.history.objectType === "Booking" ? "booking" : "lead"}`;
 }
 
@@ -364,6 +475,11 @@ export default function LeadActivityHistoryCard({
     const visibleHistory = history.filter((entry) => {
       const representedAsActivity =
         entry.action === "TASK_CREATED" || entry.action === "FOLLOW_UP_CREATED";
+      const bookingActivityPattern = isBooking ? bookingWorkflowActivityPattern(bookingProcess(entry)) : null;
+      const representedByBookingActivity = Boolean(bookingActivityPattern && activities.some((activity) => (
+        bookingActivityPattern.test(activity.subject)
+        && Math.abs(new Date(activity.createdAt).getTime() - new Date(entry.createdAt).getTime()) < 2 * 60 * 1000
+      )));
       const representedByWorkflowFeed = [
         "MOVE_TO_RECOVERY",
         "NOTE_CREATED",
@@ -384,7 +500,9 @@ export default function LeadActivityHistoryCard({
       ].includes(entry.action) ||
       (entry.action === "UPDATE" && ["Lead", "Activity", "CallDetail", "FollowUp"].includes(entry.objectType || "")) ||
       (entry.action === "STATUS_CHANGE" && ["Lead", "Activity", "FollowUp", "Task"].includes(entry.objectType || ""));
-      return !representedByWorkflowFeed && (!representedAsActivity || !entry.objectId || !activityIds.has(entry.objectId));
+      return !representedByWorkflowFeed
+        && !representedByBookingActivity
+        && (!representedAsActivity || !entry.objectId || !activityIds.has(entry.objectId));
     });
     const historyEntries: FeedEntry[] = visibleHistory.map((entry) => ({
       kind: "history",
@@ -395,7 +513,7 @@ export default function LeadActivityHistoryCard({
     return [...activityEntries, ...historyEntries].sort(
       (first, second) => new Date(second.date).getTime() - new Date(first.date).getTime(),
     );
-  }, [activities, history]);
+  }, [activities, history, isBooking]);
 
   const groupedEntries = React.useMemo(() => {
     const groups = new Map<string, FeedEntry[]>();

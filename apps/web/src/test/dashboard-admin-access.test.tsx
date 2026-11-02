@@ -34,7 +34,10 @@ vi.mock("@/contexts/auth-context", () => ({
 
 vi.mock("@/components/layout/sidebar", () => ({ Sidebar: () => <div>Sidebar</div> }));
 vi.mock("@/components/layout/header", () => ({ Header: () => <div>Header</div> }));
-vi.mock("@/components/layout/breadcrumb", () => ({ Breadcrumb: () => null }));
+vi.mock("@/components/layout/breadcrumb", () => ({
+  Breadcrumb: () => null,
+  BreadcrumbLabels: ({ children }: { children: React.ReactNode }) => children,
+}));
 vi.mock("@/components/ai/chatbot", () => ({ Chatbot: () => null }));
 vi.mock("@/components/ui/toaster", () => ({ Toaster: () => null }));
 
@@ -100,7 +103,7 @@ describe("dashboard admin route access", () => {
     expect(state.router.replace).not.toHaveBeenCalledWith("/home");
   });
 
-  it("shows report details without the CRM sidebar or header", () => {
+  it("keeps the CRM sidebar and header visible on report details", () => {
     state.pathname = "/reports/report-1";
 
     render(
@@ -110,8 +113,8 @@ describe("dashboard admin route access", () => {
     );
 
     expect(screen.getByText("Report details")).toBeInTheDocument();
-    expect(screen.queryByText("Sidebar")).not.toBeInTheDocument();
-    expect(screen.queryByText("Header")).not.toBeInTheDocument();
+    expect(screen.getByText("Sidebar")).toBeInTheDocument();
+    expect(screen.getByText("Header")).toBeInTheDocument();
   });
 
   it("keeps the CRM shell on the report creation page", () => {

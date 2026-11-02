@@ -20,6 +20,7 @@ const database = vi.hoisted(() => ({
   followUpCount: vi.fn(),
   auditLogFindMany: vi.fn(),
   auditLogCount: vi.fn(),
+  auditLogWrite: vi.fn(),
   sequenceUpsert: vi.fn(),
   bookingCreate: vi.fn(),
   tenantFindFirst: vi.fn(),
@@ -68,10 +69,11 @@ vi.mock('../middleware/authorization', () => ({
   authorizeEffectivePermission: () => (_req: Request, _res: ExpressResponse, next: NextFunction) => next(),
 }));
 
-vi.mock('../middleware/audit', () => ({ auditLog: vi.fn() }));
+vi.mock('../middleware/audit', () => ({ auditLog: database.auditLogWrite }));
 vi.mock('../services/recordAccess', () => ({ canAccessLead: vi.fn(async () => true) }));
 
 import bookingsRouter from './bookings';
+import { auditLog } from '../middleware/audit';
 
 const servers: Server[] = [];
 const tx = {
@@ -596,6 +598,53 @@ describe('PATCH /api/bookings/:bookingId/details', () => {
       where: { id: 'booking-a' },
       data: { details: { existingField: 'keep me', bankStatus: 'Approved', isSwapped: false, ratePerSqFt: 1491 } },
     }));
+  });
+
+  it('audits only changed editable fields and masks personal details', async () => {
+    database.bookingFindFirst.mockResolvedValueOnce({
+      id: 'booking-a',
+      details: { bankStatus: 'Pending', bankExecutiveName: 'Private Person' },
+    });
+
+    const response = await updateBookingDetails('booking-a', {
+      bankStatus: 'Approved',
+      bankExecutiveName: 'Another Private Person',
+    });
+
+    expect(response.status).toBe(200);
+    expect(auditLog).toHaveBeenCalledWith(
+      'tenant-a',
+      'sales-a',
+      'BOOKING_DETAILS_UPDATED',
+      'Booking',
+      'booking-a',
+      undefined,
+      {
+        changes: [
+          { field: 'bankStatus', label: 'Bank Status', oldValue: 'Pending', newValue: 'Approved' },
+          {
+            field: 'bankExecutiveName',
+            label: 'Bank Executive Name',
+            oldValue: 'Hidden for privacy',
+            newValue: 'Hidden for privacy',
+          },
+        ],
+      },
+      expect.any(String),
+    );
+    expect(JSON.stringify(vi.mocked(auditLog).mock.calls)).not.toContain('Private Person');
+  });
+
+  it('does not create repetitive history for unchanged booking details', async () => {
+    database.bookingFindFirst.mockResolvedValueOnce({
+      id: 'booking-a',
+      details: { bankStatus: 'Approved' },
+    });
+
+    const response = await updateBookingDetails('booking-a', { bankStatus: 'Approved' });
+
+    expect(response.status).toBe(200);
+    expect(auditLog).not.toHaveBeenCalled();
   });
 
   it('rejects unknown and read-only booking fields', async () => {

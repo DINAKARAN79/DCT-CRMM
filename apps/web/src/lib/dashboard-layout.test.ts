@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   layoutChanged,
   measureGridStride,
+  nextAvailablePosition,
   normalizeLayout,
   overlaps,
   type GridItem,
@@ -50,5 +51,27 @@ describe("dashboard drag layout", () => {
         expect(overlaps(next[index].position, next[other].position)).toBe(false);
       }
     }
+  });
+
+  it("places new widgets into the first free dashboard slot", () => {
+    const items = [
+      widget("a", 0, 0, 4, 3),
+      widget("b", 4, 0, 4, 3),
+    ];
+
+    expect(nextAvailablePosition(items, 4, 3, 12)).toEqual({
+      x: 8,
+      y: 0,
+      w: 4,
+      h: 3,
+    });
+    expect(
+      nextAvailablePosition(
+        [...items, widget("c", 8, 0, 4, 3)],
+        4,
+        3,
+        12,
+      ),
+    ).toEqual({ x: 0, y: 3, w: 4, h: 3 });
   });
 });

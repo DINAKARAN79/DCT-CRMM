@@ -75,6 +75,7 @@ import { installImpersonationAuditStamp } from './services/impersonationContext'
 import { normalizeOverdueScheduledItems } from './services/leadWorkflowExtras';
 import { startSiteVisitMissedScheduler } from './services/siteVisitMissedJob';
 import { assertApiKeyEncryptionConfigured } from './services/apiKeys';
+import superAdminReportingRouter from './routes/superAdminReporting';
 
 export const createApp = () => {
   installImpersonationAuditStamp();
@@ -158,6 +159,8 @@ export const createApp = () => {
   app.use('/api/super-admin/api-catalog', companyApiCatalogRouter);
   app.use('/api/admin/api-reference', companyApiCatalogRouter);
   app.use('/api/super-admin/presence-counts', presenceCountsRouter);
+  app.use('/api/super-admin/reporting', superAdminReportingRouter);
+  app.use('/api/platform', superAdminReportingRouter);
   app.use('/api/super-admin', companyRouter);
   app.use('/api/super-admin/project-layouts', projectLayoutsRouter);
   app.use('/api/project-layouts', projectLayoutQuotationRouter);

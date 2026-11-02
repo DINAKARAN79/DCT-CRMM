@@ -6,6 +6,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Eye, EyeOff, Phone } from "lucide-react";
 import { telephonySettingsApi } from "@/lib/api";
 import { openBizcallDialpad } from "@/lib/bizcall-dialpad";
+import {
+  readDialpadMonitorEntries,
+  subscribeDialpadMonitor,
+  type DialpadMonitorEntry,
+} from "@/lib/bizcall-dialpad";
+import { requestDialerCommand } from "@/lib/telephony-client";
 import { useAuth } from "@/contexts/auth-context";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -36,6 +42,7 @@ type TelephonySettings = {
   duplicateGuardSeconds: number;
   callsPerMinute: number;
   maskNumbers: boolean;
+  sendTenantIdInDial: boolean;
   blockDnc: boolean;
   dncNumbers: string;
 };
@@ -67,7 +74,7 @@ export default function TelephonySettingsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
-  const { user, isLoading, isAuthenticated, isAdmin, isSuperAdmin } = useAuth();
+  const { user, tenant, isLoading, isAuthenticated, isAdmin, isSuperAdmin } = useAuth();
   const tenantId = isSuperAdmin ? searchParams.get("tenantId") || "" : "";
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -98,6 +105,7 @@ export default function TelephonySettingsPage() {
   const [duplicateGuardSeconds, setDuplicateGuardSeconds] = React.useState(10);
   const [callsPerMinute, setCallsPerMinute] = React.useState(10);
   const [maskNumbers, setMaskNumbers] = React.useState(false);
+  const [sendTenantIdInDial, setSendTenantIdInDial] = React.useState(true);
   const [blockDnc, setBlockDnc] = React.useState(false);
   const [dncNumbers, setDncNumbers] = React.useState("");
   const [agents, setAgents] = React.useState<Array<{ userId: string; userName: string; profileId: string | null; profileName: string; canUseTelephony: boolean; registeredInBizcall: string; lastCallAt: string | null }>>([]);
@@ -112,7 +120,7 @@ export default function TelephonySettingsPage() {
   const currentSettings = {
     clickToCallUrl, authHeaderName, authToken, callerId, isActiveSetting, allowTestUrl,
     callIdFieldPath, dialpadUrl, dialpadMode, callMethod, defaultDockState, theme,
-    productionOrigin, duplicateGuardSeconds, callsPerMinute, maskNumbers, blockDnc, dncNumbers,
+    productionOrigin, duplicateGuardSeconds, callsPerMinute, maskNumbers, sendTenantIdInDial, blockDnc, dncNumbers,
   };
   const isDirty = baseline !== null && baseline !== JSON.stringify(currentSettings);
 
@@ -139,6 +147,7 @@ export default function TelephonySettingsPage() {
     setDuplicateGuardSeconds(data.duplicateGuardSeconds || 10);
     setCallsPerMinute(data.callsPerMinute || 10);
     setMaskNumbers(Boolean(data.maskNumbers));
+    setSendTenantIdInDial(data.sendTenantIdInDial ?? true);
     setBlockDnc(Boolean(data.blockDnc));
     setDncNumbers(data.dncNumbers || "");
     setBaseline(JSON.stringify({
@@ -158,6 +167,7 @@ export default function TelephonySettingsPage() {
       duplicateGuardSeconds: data.duplicateGuardSeconds || 10,
       callsPerMinute: data.callsPerMinute || 10,
       maskNumbers: Boolean(data.maskNumbers),
+      sendTenantIdInDial: data.sendTenantIdInDial ?? true,
       blockDnc: Boolean(data.blockDnc),
       dncNumbers: data.dncNumbers || "",
     }));
@@ -295,6 +305,7 @@ export default function TelephonySettingsPage() {
         duplicateGuardSeconds,
         callsPerMinute,
         maskNumbers,
+        sendTenantIdInDial,
         blockDnc,
         dncNumbers,
         ...(trimmedKey ? { authToken: trimmedKey } : {}),
@@ -395,7 +406,7 @@ export default function TelephonySettingsPage() {
 
   const openDialpadNow = () => {
     try {
-      openBizcallDialpad(dialpadUrl, user?.id || "", theme, (url, target) => window.open(url, target));
+      openBizcallDialpad(dialpadUrl, user?.id || "", tenant?.id || tenantId, theme, (url, target) => window.open(url, target));
     } catch {
       toast({ title: "Invalid dialpad URL", description: "Enter a valid HTTPS dialpad URL first.", variant: "destructive" });
     }
@@ -685,6 +696,7 @@ export default function TelephonySettingsPage() {
                 </label>
               </div>
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={maskNumbers} onChange={(event) => setMaskNumbers(event.target.checked)} /> Mask customer numbers for agents</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={sendTenantIdInDial} onChange={(event) => setSendTenantIdInDial(event.target.checked)} /> Send tenantId in DIAL (optional Bizcall context)</label>
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={blockDnc} onChange={(event) => setBlockDnc(event.target.checked)} /> Block Do-Not-Call numbers</label>
               <div className="space-y-2">
                 <Label htmlFor="dnc-numbers">Do-Not-Call numbers (E.164, one per line)</Label>
@@ -698,8 +710,56 @@ export default function TelephonySettingsPage() {
             </div>
           </form>
 
+          <PostMessageMonitor tenantId={tenant?.id || tenantId} userId={user?.id || ""} />
+
         </>
       )}
     </div>
+  );
+}
+
+function PostMessageMonitor({ tenantId, userId }: { tenantId: string; userId: string }) {
+  const [entries, setEntries] = React.useState<DialpadMonitorEntry[]>([]);
+  const [commandError, setCommandError] = React.useState("");
+
+  React.useEffect(() => {
+    if (!tenantId || !userId) return;
+    const refresh = () => setEntries(readDialpadMonitorEntries(tenantId, userId).reverse());
+    refresh();
+    return subscribeDialpadMonitor(refresh);
+  }, [tenantId, userId]);
+
+  const sendInit = () => {
+    const result = requestDialerCommand({ type: "INIT_USER", userId });
+    setCommandError(result.ok ? "" : "Dialpad is not loaded or ready. Open the dock and try again.");
+  };
+  return (
+    <section className="mt-6 space-y-3 rounded-lg border p-4" aria-label="postMessage monitor">
+      <div>
+        <h2 className="font-semibold">postMessage monitor</h2>
+        <p className="text-sm text-muted-foreground">Last 50 commands and events for this tenant and user. Numbers are masked and notes are redacted.</p>
+      </div>
+      {commandError && <p role="alert" className="text-sm text-destructive">{commandError}</p>}
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Button type="button" variant="outline" onClick={sendInit} disabled={!userId}>Send INIT_USER</Button>
+        <p className="self-center text-xs text-muted-foreground">A Bizcall-confirmed sandbox mode or number is required before DIAL can be tested safely.</p>
+        <Button type="button" variant="outline" disabled title="Waiting for a Bizcall-confirmed sandbox destination">
+          Send test DIAL
+        </Button>
+      </div>
+      <div className="max-h-72 overflow-auto rounded border">
+        {!entries.length ? <p className="p-3 text-sm text-muted-foreground">No postMessage activity recorded in this session.</p> : (
+          <ul className="divide-y">
+            {entries.map((entry, index) => (
+              <li key={`${entry.time}-${index}`} className="p-3 text-xs">
+                <p className="font-medium">{new Date(entry.time).toLocaleTimeString()} · {entry.direction.toUpperCase()} · {entry.name}</p>
+                <p className="text-muted-foreground">Tenant {entry.tenantId} · User {entry.userId}{entry.leadId ? ` · Lead ${entry.leadId}` : ""}</p>
+                <pre className="mt-1 whitespace-pre-wrap break-words">{JSON.stringify(entry.fields, null, 2)}</pre>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
   );
 }

@@ -52,9 +52,12 @@ export function getNavigationByProfile(
       { title: "Companies", href: "/admin/companies", icon: Building2 },
       { title: "Companies API", href: "/admin/companies?view=api", icon: Database },
       { title: "Custom Project Layouts", href: "/admin/custom-project-layouts", icon: MapPin },
-      { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-      { title: "Dashboards", href: "/dashboards", icon: LayoutDashboard },
-      { title: "Reports", href: "/reports", icon: BarChart3 },
+      { title: "Platform Dashboard", href: "/platform-reporting", icon: LayoutDashboard },
+      { title: "Dashboard Management", href: "/platform-reporting/dashboards", icon: LayoutDashboard },
+      { title: "Report Management", href: "/platform-reporting/reports", icon: BarChart3 },
+      { title: "Report Builder", href: "/platform-reporting/reports/new", icon: BarChart3 },
+      { title: "Object Explorer", href: "/platform-reporting/objects", icon: Database },
+      { title: "Tenant Analytics", href: "/platform-reporting/tenants", icon: Building2 },
     );
     return nav;
   }
@@ -106,6 +109,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const { profile, roles, hasEffectivePermission, isSuperAdmin, isAdmin, tenant } = useAuth();
   const logoFile = (tenant as any)?.logo as string | undefined;
   const [logoUrl, setLogoUrl] = React.useState<string>();
+  const [desktopExpanded, setDesktopExpanded] = React.useState(false);
 
   React.useEffect(() => {
     if (!logoFile) {
@@ -142,10 +146,19 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
 
   const isActive = (href: string) => {
     const [path, query] = href.split("?");
-    const matchesPath = pathname === path || pathname.startsWith(path + "/");
+    const matchesPath = path === "/platform-reporting"
+      ? pathname === path
+      : path === "/platform-reporting/reports"
+        ? pathname === path || (/^\/platform-reporting\/reports\/[^/]+$/.test(pathname) && !pathname.endsWith("/new"))
+        : pathname === path || pathname.startsWith(path + "/");
     if (!matchesPath) return false;
     if (query) return new URLSearchParams(query).get("view") === view;
     return !(path === "/admin/companies" && view === "api");
+  };
+
+  const handleNavigationClick = () => {
+    setDesktopExpanded(false);
+    onClose();
   };
 
   return (
@@ -157,13 +170,24 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         />
       )}
       <aside
+        data-dashboard-sidebar
+        data-expanded={desktopExpanded}
+        onMouseEnter={() => setDesktopExpanded(true)}
+        onMouseLeave={() => setDesktopExpanded(false)}
+        onFocusCapture={() => setDesktopExpanded(true)}
+        onBlurCapture={(event: React.FocusEvent<HTMLElement>) => {
+          const nextFocusedElement = event.relatedTarget;
+          if (!(nextFocusedElement instanceof Node) || !event.currentTarget.contains(nextFocusedElement)) {
+            setDesktopExpanded(false);
+          }
+        }}
         className={cn(
-          "group/sidebar fixed inset-y-0 left-0 z-50 w-64 max-w-[min(16rem,85vw)] overflow-hidden border-r border-white/10 bg-[linear-gradient(180deg,#278db8_0%,#1479a8_55%,#075d91_100%)] text-white shadow-xl transition-[width,transform] duration-300 ease-in-out lg:w-14 lg:translate-x-0 lg:hover:w-60 lg:focus-within:w-60",
+          `group/sidebar fixed inset-y-0 left-0 z-50 w-64 max-w-[min(16rem,85vw)] overflow-hidden border-r border-white/10 bg-[linear-gradient(180deg,#278db8_0%,#1479a8_55%,#075d91_100%)] text-white shadow-xl transition-[width,transform] duration-300 ease-in-out ${desktopExpanded ? "lg:w-60" : "lg:w-14"} lg:translate-x-0`,
           isOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
-        <div className="relative z-10 flex h-16 items-center justify-center border-b border-white/15 px-2 lg:group-hover/sidebar:justify-between lg:group-hover/sidebar:px-4 lg:group-focus-within/sidebar:justify-between lg:group-focus-within/sidebar:px-4">
-          <Link href="/home" aria-label={isSuperAdmin ? "CRM home" : `${tenant?.name || "CRM"} home`} className="flex min-w-0 items-center gap-2">
+        <div className="relative z-10 flex h-16 items-center justify-center border-b border-white/15 px-2 lg:group-data-[expanded=true]/sidebar:justify-between lg:group-data-[expanded=true]/sidebar:px-4">
+          <Link href="/home" onClick={handleNavigationClick} aria-label={isSuperAdmin ? "CRM home" : `${tenant?.name || "CRM"} home`} className="flex min-w-0 items-center gap-2">
             {logoUrl ? (
               <img
                 src={logoUrl}
@@ -175,30 +199,31 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 <span className="text-xs font-bold text-white">DCT</span>
               </div>
             )}
-            <span className="hidden min-w-0 truncate text-sm font-semibold text-white lg:group-hover/sidebar:block lg:group-focus-within/sidebar:block">{isSuperAdmin ? "CRM" : tenant?.name || "CRM"}</span>
+            <span className="hidden min-w-0 truncate text-sm font-semibold text-white lg:group-data-[expanded=true]/sidebar:block">{isSuperAdmin ? "CRM" : tenant?.name || "CRM"}</span>
           </Link>
           <Button variant="ghost" size="icon" onClick={onClose} className="text-white hover:bg-white/15 hover:text-white lg:hidden">
             <X className="h-4 w-4" />
           </Button>
         </div>
         <ScrollArea className="relative z-10 h-[calc(100vh-4rem)] py-3">
-          <nav className="space-y-0.5 px-1 lg:px-0.5 lg:group-hover/sidebar:px-2 lg:group-focus-within/sidebar:px-2">
+          <nav className="space-y-0.5 px-1 lg:px-0.5 lg:group-data-[expanded=true]/sidebar:px-2">
             {navigation.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={handleNavigationClick}
                 aria-label={item.title}
                 title={item.title}
                 className={cn(
-                  "flex min-w-0 items-center justify-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium text-white/90 transition-colors hover:bg-white/15 hover:text-white lg:justify-center lg:px-0 lg:group-hover/sidebar:justify-start lg:group-hover/sidebar:px-2.5 lg:group-focus-within/sidebar:justify-start lg:group-focus-within/sidebar:px-2.5",
+                  "flex min-w-0 items-center justify-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium text-white/90 transition-colors hover:bg-white/15 hover:text-white lg:justify-center lg:px-0 lg:group-data-[expanded=true]/sidebar:justify-start lg:group-data-[expanded=true]/sidebar:px-2.5",
                   isActive(item.href)
                     ? "bg-white/20 text-white shadow-sm ring-1 ring-inset ring-white/10"
                     : ""
                 )}
               >
                 <item.icon className="h-4 w-4 shrink-0" />
-                <span className="min-w-0 flex-1 truncate lg:hidden lg:group-hover/sidebar:block lg:group-focus-within/sidebar:block">{item.title}</span>
-                {isActive(item.href) && <ChevronRight className="hidden h-3.5 w-3.5 shrink-0 lg:group-hover/sidebar:block lg:group-focus-within/sidebar:block" />}
+                <span className="min-w-0 flex-1 truncate lg:hidden lg:group-data-[expanded=true]/sidebar:block">{item.title}</span>
+                {isActive(item.href) && <ChevronRight className="hidden h-3.5 w-3.5 shrink-0 lg:group-data-[expanded=true]/sidebar:block" />}
               </Link>
             ))}
           </nav>

@@ -43,6 +43,7 @@ import {
   clampGridValue,
   layoutChanged,
   measureGridStride,
+  nextAvailablePosition,
   normalizeLayout,
 } from "@/lib/dashboard-layout";
 import { useAuth } from "@/contexts/auth-context";
@@ -731,15 +732,16 @@ export default function DashboardBuilderPage() {
       setError("Maximum of 20 dashboard components reached.");
       return;
     }
-    const widget = newWidget(type, {
-      x: 0,
-      y: widgets.reduce(
-        (max, item) => Math.max(max, item.position.y + item.position.h),
-        0,
+    const widgetWidth = Math.max(1, Math.floor(layoutConfig.gridColumns / 3));
+    const widget = newWidget(
+      type,
+      nextAvailablePosition(
+        widgets,
+        widgetWidth,
+        3,
+        layoutConfig.gridColumns,
       ),
-      w: type === "text" || type === "image" ? 4 : 6,
-      h: 3,
-    });
+    );
     widget.minW = 2;
     widget.minH = 2;
 
@@ -1124,15 +1126,19 @@ export default function DashboardBuilderPage() {
     setDirty(true);
   };
   const resetLayout = () => {
-    const resetWidgets = widgets.map((widget, index) => ({
-      ...widget,
-      position: {
-        x: (index * 4) % layoutConfig.gridColumns,
-        y: Math.floor(index / 3) * 3,
-        w: Math.min(4, layoutConfig.gridColumns),
-        h: 3,
-      },
-    }));
+    const widgetWidth = Math.max(1, Math.floor(layoutConfig.gridColumns / 3));
+    const resetWidgets = widgets.reduce<Widget[]>((arranged, widget) => {
+      arranged.push({
+        ...widget,
+        position: nextAvailablePosition(
+          arranged,
+          widgetWidth,
+          3,
+          layoutConfig.gridColumns,
+        ),
+      });
+      return arranged;
+    }, []);
     setWidgets(
       normalizeLayout(resetWidgets, undefined, layoutConfig.gridColumns),
     );
@@ -1408,6 +1414,14 @@ export default function DashboardBuilderPage() {
             <Plus className="mr-1.5 h-3.5 w-3.5" /> Widget
           </Button>
           <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setFilterOpen(true)}
+            title="Add a dashboard filter"
+          >
+            Add Filter
+          </Button>
+          <Button
             variant="ghost"
             size="icon"
             onClick={undo}
@@ -1464,6 +1478,29 @@ export default function DashboardBuilderPage() {
             <button className="float-right" onClick={() => setError("")}>
               <X className="h-4 w-4" />
             </button>
+          </div>
+        )}
+        {filters.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            {filters.map((filter, index) => (
+              <span
+                key={`${filter.field}-${index}`}
+                className="inline-flex items-center gap-2 rounded-full border bg-background px-3 py-1 text-xs"
+              >
+                <span className="font-medium">{labelFromKey(filter.field)}</span>
+                <span className="text-muted-foreground">
+                  {filter.operator} {filter.value}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${labelFromKey(filter.field)} filter`}
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => removeFilter(index)}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
           </div>
         )}
         <div
@@ -2021,10 +2058,17 @@ function WidgetCard({
   fill?: boolean;
 }) {
   const width = Math.min(columns, Math.max(1, widget.position.w));
-  const style = fill ? { height: "100%", width: "100%" } : {
-    gridColumn: `${widget.position.x + 1} / span ${width}`,
-    gridRow: `${widget.position.y + 1} / span ${widget.position.h}`,
-  };
+  const style = fill
+    ? { height: "100%", width: "100%" }
+    : columns === 1
+      ? {
+          gridColumn: "1 / -1",
+          gridRow: `span ${Math.max(1, widget.position.h)}`,
+        }
+      : {
+          gridColumn: `${widget.position.x + 1} / span ${width}`,
+          gridRow: `${widget.position.y + 1} / span ${widget.position.h}`,
+        };
   const chartType = widget.config?.chartType || "bar";
   const sourced = rowsForWidget(result, widget.config);
   const tableRows = selectTableRows(
@@ -2180,7 +2224,7 @@ function WidgetCard({
         </div>
       </div>
       {!widget.minimized && (
-        <div className="min-h-0 flex-1 overflow-auto px-4 pb-3 pt-1">
+        <div className={`min-h-0 flex-1 px-4 pb-3 pt-1 ${chartType === "pie" || chartType === "donut" ? "overflow-hidden" : "overflow-auto"}`}>
           {widget.type === "text" ? (
             <div className="prose prose-sm">
               <h3>{widget.config?.title || "Text widget"}</h3>

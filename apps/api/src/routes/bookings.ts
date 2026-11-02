@@ -120,6 +120,8 @@ const bookingDetailsSchema = z.object({
   }
 });
 
+const PRIVATE_BOOKING_AUDIT_FIELD = /applicant|witness|name|email|phone|mobile|address|aadhaar|aadhar|pan|photo|account|bank.?executive|document|customer|owner|manager|user|notes?|comments?|reason|whatsapp/i;
+
 const asJsonObject = (value: Prisma.JsonValue): Record<string, Prisma.JsonValue> =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, Prisma.JsonValue>
@@ -270,7 +272,10 @@ router.post(
       if (updated.count !== 1) {
         return res.status(409).json({ success: false, error: 'Booking is already cancelled or has a pending cancellation request' });
       }
-      await auditLog(tenantId, userId, 'UPDATE', 'Booking', req.params.bookingId, {}, { cancellationStatus: 'PENDING', cancellationReason: notes }, req.ip);
+      await auditLog(tenantId, userId, 'BOOKING_CANCELLATION_REQUESTED', 'Booking', req.params.bookingId, undefined, {
+        cancellationStatus: 'PENDING',
+        cancellationReason: notes,
+      }, req.ip);
       await logBookingActivity(tenantId, req.params.bookingId, userId, 'Booking cancellation requested', `Sent to MIS team for verification. Notes: ${notes}`);
       return res.json({ success: true });
     } catch (error) {
@@ -316,7 +321,16 @@ router.post(
           });
         }
       });
-      await auditLog(tenantId, userId, 'UPDATE', 'Booking', req.params.bookingId, { cancellationStatus: 'PENDING' }, { cancellationStatus: approve ? 'APPROVED' : 'REJECTED' }, req.ip);
+      await auditLog(
+        tenantId,
+        userId,
+        approve ? 'BOOKING_CANCELLATION_APPROVED' : 'BOOKING_CANCELLATION_REJECTED',
+        'Booking',
+        req.params.bookingId,
+        { cancellationStatus: 'PENDING' },
+        { cancellationStatus: approve ? 'APPROVED' : 'REJECTED', reviewNote: note || null },
+        req.ip,
+      );
       await logBookingActivity(
         tenantId, req.params.bookingId, userId,
         approve ? 'Booking cancelled by MIS' : 'Booking cancellation rejected by MIS',
@@ -478,22 +492,37 @@ router.patch(
       if (!current) return res.status(404).json({ success: false, error: 'Booking not found' });
 
       const previousDetails = asJsonObject(current.details);
+      const changedFields = Object.entries(changedDetails)
+        .filter(([field, value]) => JSON.stringify(previousDetails[field] ?? null) !== JSON.stringify(value))
+        .map(([field, newValue]) => {
+          const fieldDefinition = BOOKING_DETAIL_FIELDS.find((entry) => entry.name === field);
+          const oldValue = previousDetails[field];
+          const isPrivate = PRIVATE_BOOKING_AUDIT_FIELD.test(field);
+          return {
+            field,
+            label: fieldDefinition?.label || field,
+            oldValue: isPrivate ? 'Hidden for privacy' : oldValue ?? null,
+            newValue: isPrivate ? 'Hidden for privacy' : newValue,
+          };
+        });
       const details = { ...previousDetails, ...changedDetails } as Prisma.InputJsonObject;
       const booking = await prisma.booking.update({
         where: { id: current.id },
         data: { details },
         select: { id: true, details: true, updatedAt: true },
       });
-      await auditLog(
-        tenantId,
-        userId,
-        'UPDATE',
-        'Booking',
-        current.id,
-        { updatedFields: [] },
-        { updatedFields: Object.keys(changedDetails) },
-        req.ip,
-      );
+      if (changedFields.length) {
+        await auditLog(
+          tenantId,
+          userId,
+          'BOOKING_DETAILS_UPDATED',
+          'Booking',
+          current.id,
+          undefined,
+          { changes: changedFields },
+          req.ip,
+        );
+      }
       return res.json({ success: true, data: booking });
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -531,7 +560,7 @@ router.patch(
         return updated;
       });
 
-      await auditLog(tenantId, userId, 'UPDATE', 'Booking', current.id, { bookingStage: current.bookingStage }, { bookingStage: stage }, req.ip);
+      await auditLog(tenantId, userId, 'BOOKING_STAGE_CHANGED', 'Booking', current.id, { bookingStage: current.bookingStage }, { bookingStage: stage }, req.ip);
       await logBookingActivity(
         tenantId, current.id, userId,
         `Booking status updated - ${booking.bookingNumber}`,
@@ -665,8 +694,9 @@ router.post(
         });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-      await auditLog(tenantId, userId, 'UPDATE', 'Booking', req.params.bookingId, undefined, {
+      await auditLog(tenantId, userId, 'BOOKING_WELCOME_CALL_COMPLETED', 'Booking', req.params.bookingId, undefined, {
         status: 'CONFIRMED',
+        bookingStage: 'WELCOME_CALL',
         welcomeCallCompletedAt: booking?.welcomeCallCompletedAt,
       }, req.ip);
       return res.json({ success: true, data: booking });
@@ -1027,7 +1057,7 @@ router.post(
         });
       });
 
-      await auditLog(tenantId, userId, 'CREATE', 'Booking', booking.id, undefined, {
+      await auditLog(tenantId, userId, 'BOOKING_CREATED', 'Booking', booking.id, undefined, {
         bookingNumber: booking.bookingNumber,
         quotationId: quotation.id,
         unitId: quotation.unitId,

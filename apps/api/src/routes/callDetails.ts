@@ -35,18 +35,28 @@ export const callDetailUpdateSchema = callDetailSchema.omit({ leadId: true }).pa
 
 router.get('/', authorize('Activity', 'read'), async (req: AuthRequest, res: Response) => {
   try {
-    const leadId = z.string().min(1).parse(req.query.leadId);
-    const lead = await prisma.lead.findFirst({
-      where: { id: leadId, tenantId: req.tenantId! },
-      select: { id: true },
-    });
-    if (!lead) return res.status(404).json({ success: false, error: 'Lead not found' });
-    if (!(await canAccessLeadId(req.user!, leadId))) {
-      return res.status(403).json({ success: false, error: 'You do not have access to this lead' });
+    const parsedLeadId = z.string().min(1).optional().safeParse(req.query.leadId);
+    if (!parsedLeadId.success) return res.status(400).json({ success: false, error: 'A valid leadId is required' });
+    const leadId = parsedLeadId.data;
+    if (leadId) {
+      const lead = await prisma.lead.findFirst({
+        where: { id: leadId, tenantId: req.tenantId! },
+        select: { id: true },
+      });
+      if (!lead) return res.status(404).json({ success: false, error: 'Lead not found' });
+      if (!(await canAccessLeadId(req.user!, leadId))) {
+        return res.status(403).json({ success: false, error: 'You do not have access to this lead' });
+      }
     }
 
     const data = await prisma.callDetail.findMany({
-      where: { tenantId: req.tenantId!, leadId },
+      where: leadId
+        ? { tenantId: req.tenantId!, leadId }
+        : {
+          tenantId: req.tenantId!,
+          leadId: null,
+          ...(!req.user?.isAdmin && !req.user?.isSuperAdmin ? { createdById: req.user!.id } : {}),
+        },
       include: {
         createdBy: { select: { id: true, firstName: true, lastName: true } },
         lastModifiedBy: { select: { id: true, firstName: true, lastName: true } },
@@ -57,8 +67,8 @@ router.get('/', authorize('Activity', 'read'), async (req: AuthRequest, res: Res
       orderBy: [{ startAt: 'desc' }, { createdAt: 'desc' }],
       take: 100,
     });
-    const maskNumbers = !req.user?.isAdmin && !req.user?.isSuperAdmin &&
-      Boolean((await prisma.telephonySetting.findUnique({ where: { tenantId: req.tenantId! }, select: { maskNumbers: true } }))?.maskNumbers);
+    const maskNumbers = !leadId || (!req.user?.isAdmin && !req.user?.isSuperAdmin &&
+      Boolean((await prisma.telephonySetting.findUnique({ where: { tenantId: req.tenantId! }, select: { maskNumbers: true } }))?.maskNumbers));
     res.json({
       success: true,
       data: maskNumbers
@@ -87,11 +97,13 @@ router.get('/:id', authorize('Activity', 'read'), async (req: AuthRequest, res: 
       },
     });
     if (!call) return res.status(404).json({ success: false, error: 'Call details not found' });
-    if (!(await canAccessLeadId(req.user!, call.leadId))) {
+    const canReadUnlinkedCall = call.leadId === null
+      && (call.createdById === req.user!.id || req.user?.isAdmin || req.user?.isSuperAdmin);
+    if (call.leadId ? !(await canAccessLeadId(req.user!, call.leadId)) : !canReadUnlinkedCall) {
       return res.status(403).json({ success: false, error: 'You do not have access to this call' });
     }
-    const maskNumbers = !req.user?.isAdmin && !req.user?.isSuperAdmin &&
-      Boolean((await prisma.telephonySetting.findUnique({ where: { tenantId: req.tenantId! }, select: { maskNumbers: true } }))?.maskNumbers);
+    const maskNumbers = call.leadId === null || (!req.user?.isAdmin && !req.user?.isSuperAdmin &&
+      Boolean((await prisma.telephonySetting.findUnique({ where: { tenantId: req.tenantId! }, select: { maskNumbers: true } }))?.maskNumbers));
     res.json({
       success: true,
       data: maskNumbers && call.callTo ? { ...call, callTo: maskPhone(call.callTo) } : call,
@@ -259,7 +271,9 @@ router.put('/:id', authorize('Activity', 'edit'), async (req: AuthRequest, res: 
       where: { id: req.params.id, tenantId: req.tenantId! },
     });
     if (!existing) return res.status(404).json({ success: false, error: 'Call details not found' });
-    if (!(await canAccessLeadId(req.user!, existing.leadId))) {
+    const canEditUnlinkedCall = existing.leadId === null
+      && (existing.createdById === req.user!.id || req.user?.isAdmin || req.user?.isSuperAdmin);
+    if (existing.leadId ? !(await canAccessLeadId(req.user!, existing.leadId)) : !canEditUnlinkedCall) {
       return res.status(403).json({ success: false, error: 'You do not have access to this call' });
     }
 
@@ -339,12 +353,14 @@ router.put('/:id', authorize('Activity', 'edit'), async (req: AuthRequest, res: 
           },
         },
       });
-      await appendLeadProcessNote(tx, {
-        tenantId: req.tenantId!,
-        leadId: existing.leadId,
-        userId: req.user!.id,
-        content: `Call details updated: ${call.callType === 'INBOUND' ? 'Inbound' : 'Outbound'} call · ${call.status.replace(/_/g, ' ')}${call.notes ? ` · ${call.notes}` : ''}`,
-      });
+      if (existing.leadId) {
+        await appendLeadProcessNote(tx, {
+          tenantId: req.tenantId!,
+          leadId: existing.leadId,
+          userId: req.user!.id,
+          content: `Call details updated: ${call.callType === 'INBOUND' ? 'Inbound' : 'Outbound'} call · ${call.status.replace(/_/g, ' ')}${call.notes ? ` · ${call.notes}` : ''}`,
+        });
+      }
       return call;
     });
     res.json({ success: true, data: updated });
@@ -363,7 +379,9 @@ router.delete('/:id', authorize('Activity', 'delete'), async (req: AuthRequest, 
       where: { id: req.params.id, tenantId: req.tenantId! },
     });
     if (!existing) return res.status(404).json({ success: false, error: 'Call details not found' });
-    if (!(await canAccessLeadId(req.user!, existing.leadId))) {
+    const canDeleteUnlinkedCall = existing.leadId === null
+      && (existing.createdById === req.user!.id || req.user?.isAdmin || req.user?.isSuperAdmin);
+    if (existing.leadId ? !(await canAccessLeadId(req.user!, existing.leadId)) : !canDeleteUnlinkedCall) {
       return res.status(403).json({ success: false, error: 'You do not have access to this call' });
     }
     await prisma.$transaction(async (tx) => {
@@ -386,12 +404,14 @@ router.delete('/:id', authorize('Activity', 'delete'), async (req: AuthRequest, 
           },
         },
       });
-      await appendLeadProcessNote(tx, {
-        tenantId: req.tenantId!,
-        leadId: existing.leadId,
-        userId: req.user!.id,
-        content: `Call details deleted: ${existing.callType === 'INBOUND' ? 'Inbound' : 'Outbound'} call ${existing.name}`,
-      });
+      if (existing.leadId) {
+        await appendLeadProcessNote(tx, {
+          tenantId: req.tenantId!,
+          leadId: existing.leadId,
+          userId: req.user!.id,
+          content: `Call details deleted: ${existing.callType === 'INBOUND' ? 'Inbound' : 'Outbound'} call ${existing.name}`,
+        });
+      }
       await tx.callDetail.delete({ where: { id: existing.id } });
     });
     res.json({ success: true, message: 'Call details deleted successfully' });

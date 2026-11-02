@@ -12,6 +12,24 @@ export function overlaps(a: GridPosition, b: GridPosition) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
+export function nextAvailablePosition(
+  items: GridItem[],
+  width: number,
+  height: number,
+  columns: number,
+): GridPosition {
+  const w = Math.max(1, Math.min(columns, width));
+  const h = Math.max(1, height);
+  for (let y = 0; ; y += 1) {
+    for (let x = 0; x <= columns - w; x += 1) {
+      const position = { x, y, w, h };
+      if (!items.some((item) => overlaps(position, item.position))) {
+        return position;
+      }
+    }
+  }
+}
+
 export function clampGridValue(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }

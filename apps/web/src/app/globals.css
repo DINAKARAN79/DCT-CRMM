@@ -353,6 +353,16 @@ canvas {
   padding: clamp(0.75rem, 1.4vw, 1.75rem);
 }
 
+@media (min-width: 1024px) {
+  .dashboard-main {
+    transition: padding-left 300ms ease-in-out;
+  }
+
+  .dashboard-shell [data-dashboard-sidebar][data-expanded="true"] ~ .dashboard-main {
+    padding-left: 15rem;
+  }
+}
+
 .crm-page-form,
 .crm-record-form {
   container-type: inline-size;

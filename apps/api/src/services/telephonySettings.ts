@@ -33,6 +33,7 @@ export const telephonySettingsSchema = z.object({
   duplicateGuardSeconds: z.number().int().min(1).max(120).default(10),
   callsPerMinute: z.number().int().min(1).max(60).default(10),
   maskNumbers: z.boolean().default(false),
+  sendTenantIdInDial: z.boolean().default(true),
   blockDnc: z.boolean().default(false),
   dncNumbers: z.string().max(100_000).default(''),
   authToken: z.string().max(2000).optional(),
@@ -72,6 +73,7 @@ export type PublicTelephonySettings = {
   duplicateGuardSeconds: number;
   callsPerMinute: number;
   maskNumbers: boolean;
+  sendTenantIdInDial: boolean;
   blockDnc: boolean;
   dncNumbers: string;
 };
@@ -133,6 +135,7 @@ export function publicTelephonySettings(row: {
   duplicateGuardSeconds?: number;
   callsPerMinute?: number;
   maskNumbers?: boolean;
+  sendTenantIdInDial?: boolean;
   blockDnc?: boolean;
   dncNumbers?: string;
 } | null): PublicTelephonySettings {
@@ -161,6 +164,7 @@ export function publicTelephonySettings(row: {
       duplicateGuardSeconds: 10,
       callsPerMinute: 10,
       maskNumbers: false,
+      sendTenantIdInDial: true,
       blockDnc: false,
       dncNumbers: '',
     };
@@ -205,6 +209,7 @@ export function publicTelephonySettings(row: {
     duplicateGuardSeconds: row.duplicateGuardSeconds ?? 10,
     callsPerMinute: row.callsPerMinute ?? 10,
     maskNumbers: row.maskNumbers ?? false,
+    sendTenantIdInDial: row.sendTenantIdInDial ?? true,
     blockDnc: row.blockDnc ?? false,
     dncNumbers: row.dncNumbers || '',
   };
@@ -304,6 +309,7 @@ export async function saveTelephonySettings(
       duplicateGuardSeconds: input.duplicateGuardSeconds,
       callsPerMinute: input.callsPerMinute,
       maskNumbers: input.maskNumbers,
+      sendTenantIdInDial: input.sendTenantIdInDial,
       blockDnc: input.blockDnc,
       dncNumbers: dncNumbers.join('\n'),
     },
@@ -329,6 +335,7 @@ export async function saveTelephonySettings(
       duplicateGuardSeconds: input.duplicateGuardSeconds,
       callsPerMinute: input.callsPerMinute,
       maskNumbers: input.maskNumbers,
+      sendTenantIdInDial: input.sendTenantIdInDial,
       blockDnc: input.blockDnc,
       dncNumbers: dncNumbers.join('\n'),
     },
@@ -356,6 +363,7 @@ export async function saveTelephonySettings(
     duplicateGuardSeconds: settings.duplicateGuardSeconds,
     callsPerMinute: settings.callsPerMinute,
     maskNumbers: settings.maskNumbers,
+    sendTenantIdInDial: settings.sendTenantIdInDial,
     blockDnc: settings.blockDnc,
     dncCount,
     dncNumbersChanged: dncChanged,
@@ -378,6 +386,7 @@ export async function saveTelephonySettings(
     duplicateGuardSeconds: existing.duplicateGuardSeconds,
     callsPerMinute: existing.callsPerMinute,
     maskNumbers: existing.maskNumbers,
+    sendTenantIdInDial: existing.sendTenantIdInDial,
     blockDnc: existing.blockDnc,
     dncCount: existing.dncNumbers.split(/[\s,;]+/).filter(Boolean).length,
     dncNumbersChanged: false,

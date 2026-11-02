@@ -1,4 +1,4 @@
-// File: /Users/dinakarans/Desktop/Main-CRM/lastfile/DCT-CRM/apps/portal/src/app/layout.tsx
+// File: /Users/dinakarans/Desktop/CRM/DCT-CRM/apps/portal/src/app/layout.tsx
 import * as entry from '../../../src/app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 
