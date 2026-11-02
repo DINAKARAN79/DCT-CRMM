@@ -33,7 +33,8 @@ import { useAuth } from "@/contexts/auth-context";
 import { leadApi, siteVisitApi, activityApi, callDetailsApi, followUpApi, objectManagerApi, projectApi, enquiryApi } from "@/lib/api";
 import { clickToCallToast, type ClickToCallField } from "@/lib/click-to-call";
 import { requestLeadCall } from "@/lib/telephony-client";
-import { maskTelephonyNumber, useTelephonyActive, useTelephonyNumberMasking } from "@/lib/telephony-client";
+import { maskTelephonyNumber, useTelephonyActive, useTelephonyNumberMasking, useTelephonyReasonCode } from "@/lib/telephony-client";
+import { TelephonyStatusHint } from "@/components/crm/telephony-status-hint";
 import { ToastAction } from "@/components/ui/toast";
 import { notifyLeadListUpdated } from "@/lib/lead-list-events";
 import { LeadStatusPath } from "@/components/crm/lead-status-path";
@@ -343,6 +344,7 @@ export default function LeadDetailPage() {
   const router = useRouter();
   const { profile, isLoading: authLoading, hasPermission, hasEffectivePermission, isAdmin, isSuperAdmin, getLeadStatusLabel } = useAuth();
   const telephonyActive = useTelephonyActive();
+  const telephonyReasonCode = useTelephonyReasonCode();
   useTelephonyNumberMasking();
   const { toast } = useToast();
   const leadId = params.id as string;
@@ -1902,7 +1904,10 @@ export default function LeadDetailPage() {
                       {callingField === (lead.phone ? "phone" : "mobile") ? "Calling..." : maskTelephonyNumber(lead.phone || lead.mobile, lead.countryCode)}
                     </button>
                   ) : (
-                    <p className="truncate text-[12px] font-medium leading-4 text-slate-800">{maskTelephonyNumber(lead.phone || lead.mobile, lead.countryCode) || "—"}</p>
+                    <p className="flex items-center gap-1 truncate text-[12px] font-medium leading-4 text-slate-800">
+                      {maskTelephonyNumber(lead.phone || lead.mobile, lead.countryCode) || "—"}
+                      {(lead.phone || lead.mobile) ? <TelephonyStatusHint reasonCode={telephonyReasonCode} isAdmin={Boolean(isAdmin || isSuperAdmin)} /> : null}
+                    </p>
                   )}
                 </div>
                 <div className="min-w-0">
@@ -1912,7 +1917,10 @@ export default function LeadDetailPage() {
                       {callingField === "mobile" ? "Calling..." : maskTelephonyNumber(lead.mobile, lead.countryCode)}
                     </button>
                   ) : (
-                    <p className="truncate text-[12px] font-medium leading-4 text-slate-800">{maskTelephonyNumber(lead.mobile, lead.countryCode) || "—"}</p>
+                    <p className="flex items-center gap-1 truncate text-[12px] font-medium leading-4 text-slate-800">
+                      {maskTelephonyNumber(lead.mobile, lead.countryCode) || "—"}
+                      {lead.mobile ? <TelephonyStatusHint reasonCode={telephonyReasonCode} isAdmin={Boolean(isAdmin || isSuperAdmin)} /> : null}
+                    </p>
                   )}
                 </div>
                 <div className="min-w-0">
@@ -1922,7 +1930,10 @@ export default function LeadDetailPage() {
                       {callingField === "secondaryPhone" ? "Calling..." : maskTelephonyNumber(lead.secondaryPhone, lead.secondaryCountryCode || lead.countryCode)}
                     </button>
                   ) : (
-                    <p className="truncate text-[12px] font-medium leading-4 text-slate-800">{maskTelephonyNumber(lead.secondaryPhone, lead.secondaryCountryCode || lead.countryCode) || "—"}</p>
+                    <p className="flex items-center gap-1 truncate text-[12px] font-medium leading-4 text-slate-800">
+                      {maskTelephonyNumber(lead.secondaryPhone, lead.secondaryCountryCode || lead.countryCode) || "—"}
+                      {lead.secondaryPhone ? <TelephonyStatusHint reasonCode={telephonyReasonCode} isAdmin={Boolean(isAdmin || isSuperAdmin)} /> : null}
+                    </p>
                   )}
                 </div>
                 <div className="min-w-0">

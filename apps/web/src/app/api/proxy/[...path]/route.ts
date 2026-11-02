@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:3001';
+const BACKEND_URL = process.env.BACKEND_URL
+  || (process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:3001' : '');
 
 async function proxyRequest(
   method: string,
   path: string,
   request: NextRequest
 ) {
+  if (!BACKEND_URL) throw new Error('BACKEND_URL must be configured for the web API proxy.');
   const cookieHeader = request.headers.get('cookie') || '';
 
   const headers: Record<string, string> = {

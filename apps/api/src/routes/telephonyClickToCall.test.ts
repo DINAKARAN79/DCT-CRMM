@@ -9,6 +9,7 @@ const dialpadMocks = vi.hoisted(() => ({
   findLead: vi.fn(),
   findCall: vi.fn(),
   updateCall: vi.fn(),
+  settingsFindUnique: vi.fn(),
   canAccessLead: vi.fn().mockResolvedValue(true),
 }));
 
@@ -28,6 +29,7 @@ vi.mock('../services/clickToCall', () => ({
 
 vi.mock('@dct-crm/db', () => ({
   prisma: {
+    telephonySetting: { findUnique: dialpadMocks.settingsFindUnique },
     lead: { findFirst: dialpadMocks.findLead },
     callDetail: { findFirst: dialpadMocks.findCall, update: dialpadMocks.updateCall },
   },
@@ -45,7 +47,16 @@ vi.mock('../services/callLogStatus', () => ({
   applyCallLogStatusRule: vi.fn(),
 }));
 
+vi.mock('../services/telephonyCredentials', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/telephonyCredentials')>();
+  return {
+    ...actual,
+    decryptTelephonyToken: vi.fn(),
+  };
+});
+
 import telephonyRouter from './telephonyClickToCall';
+import { decryptTelephonyToken, TelephonyCredentialError } from '../services/telephonyCredentials';
 
 const servers: Server[] = [];
 
@@ -73,11 +84,83 @@ afterEach(async () => {
   dialpadMocks.findLead.mockReset();
   dialpadMocks.findCall.mockReset();
   dialpadMocks.updateCall.mockReset();
+  dialpadMocks.settingsFindUnique.mockReset();
   dialpadMocks.hasPermission.mockReset().mockResolvedValue(true);
   dialpadMocks.canAccessLead.mockReset().mockResolvedValue(true);
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   })));
+});
+
+describe('GET /api/telephony/client-config', () => {
+  async function getClientConfig() {
+    const app = express();
+    app.use('/api/telephony', telephonyRouter);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP server address');
+    return fetch(`http://127.0.0.1:${address.port}/api/telephony/client-config`);
+  }
+
+  it('returns a reason code for permission, missing settings, inactive, and missing-key states', async () => {
+    const cases = [
+      { allowed: false, settings: null, reasonCode: 'NO_PERMISSION' },
+      { allowed: true, settings: null, reasonCode: 'NOT_CONFIGURED' },
+      { allowed: true, settings: { isActive: false, encryptedCredentials: 'cipher' }, reasonCode: 'DISABLED' },
+      { allowed: true, settings: { isActive: true, encryptedCredentials: null }, reasonCode: 'KEY_MISSING' },
+    ] as const;
+    for (const testCase of cases) {
+      dialpadMocks.hasPermission.mockResolvedValue(testCase.allowed);
+      dialpadMocks.settingsFindUnique.mockResolvedValue(testCase.settings);
+      const response = await getClientConfig();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        ok: false,
+        data: { active: false, reasonCode: testCase.reasonCode },
+      });
+    }
+  });
+
+  it('distinguishes an unreadable saved key and activates only after decryption succeeds', async () => {
+    dialpadMocks.hasPermission.mockResolvedValue(true);
+    dialpadMocks.settingsFindUnique.mockResolvedValue({
+      isActive: true,
+      encryptedCredentials: 'cipher',
+      dialpadUrl: 'https://bizcall.cxteletech.com/embed/dialpad',
+      dialpadMode: 'DOCKED',
+      callMethod: 'SERVER_API',
+      theme: 'CRM',
+      defaultDockState: 'COLLAPSED',
+      maskNumbers: false,
+    });
+    vi.mocked(decryptTelephonyToken).mockImplementationOnce(() => {
+      throw new TelephonyCredentialError('unreadable', 'CREDENTIALS_KEY_MISSING');
+    });
+    const unreadable = await getClientConfig();
+    expect(await unreadable.json()).toMatchObject({
+      ok: false,
+      data: { active: false, reasonCode: 'KEY_UNREADABLE' },
+    });
+
+    vi.mocked(decryptTelephonyToken).mockReturnValueOnce('fake-token');
+    const active = await getClientConfig();
+    expect(await active.json()).toMatchObject({
+      ok: true,
+      data: { active: true, reasonCode: 'ACTIVE' },
+    });
+  });
+
+  it('returns a diagnostic error code when the settings table cannot be read', async () => {
+    dialpadMocks.hasPermission.mockResolvedValue(true);
+    dialpadMocks.settingsFindUnique.mockRejectedValue(new Error('relation does not exist'));
+    const response = await getClientConfig();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      code: 'TELEPHONY_CONFIG_UNAVAILABLE',
+    });
+  });
 });
 
 describe('POST /api/telephony/click-to-call', () => {

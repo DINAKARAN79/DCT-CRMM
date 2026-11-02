@@ -13,6 +13,7 @@ import { assertClickToCallUrl } from '../../services/telephonyUrl';
 import { buildClickToCallPayload } from '../../services/clickToCall';
 import { normalizeLeadPhone } from '../../services/leadDuplicateDetection';
 import { checkDialpadEmbedding } from '../../services/telephonyEmbedding';
+import { getPublicApiBaseUrl } from '../../services/publicApiBaseUrl';
 
 const router = Router();
 router.use(authenticate);
@@ -30,6 +31,80 @@ function requireAdministrator(req: AuthRequest, res: Response, next: NextFunctio
 }
 
 router.use(requireAdministrator);
+
+function getPublicApiUrl(req: AuthRequest) {
+  const trustProxy = req.app.get('trust proxy fn') as ((address: string, index: number) => boolean) | undefined;
+  const trustedProxy = Boolean(trustProxy?.(req.socket.remoteAddress || '', 0));
+  return getPublicApiBaseUrl({
+    nodeEnv: process.env.NODE_ENV,
+    publicBaseUrl: process.env.PUBLIC_API_BASE_URL,
+    allowedHosts: process.env.ALLOWED_API_HOSTS,
+    trustProxy: trustedProxy,
+    protocol: req.protocol,
+    host: req.get('host') || '',
+    forwardedProto: trustedProxy ? req.get('x-forwarded-proto') : undefined,
+    forwardedHost: trustedProxy ? req.get('x-forwarded-host') : undefined,
+  });
+}
+
+router.get('/environment-check', async (req: AuthRequest, res: Response) => {
+  try {
+    const [tables] = await prisma.$queryRaw<Array<{ settingsTable: string | null; agentTable: string | null }>>`
+      SELECT
+        to_regclass('public.telephony_settings')::text AS "settingsTable",
+        to_regclass('public.telephony_agent_permissions')::text AS "agentTable"
+    `;
+    const settingsTablePresent = Boolean(tables?.settingsTable);
+    const agentPermissionTablePresent = Boolean(tables?.agentTable);
+    const [settings, profiles] = await Promise.all([
+      settingsTablePresent
+        ? prisma.telephonySetting.findUnique({
+            where: { tenantId: req.tenantId! },
+            select: { encryptedCredentials: true, dialpadUrl: true },
+          })
+        : Promise.resolve(null),
+      prisma.profile.findMany({
+        where: { tenantId: req.tenantId! },
+        select: {
+          name: true,
+          isAdmin: true,
+          profilePermissions: { select: { permission: { select: { name: true } } } },
+        },
+      }),
+    ]);
+    const defaultProfiles = profiles.filter((profile) =>
+      profile.isAdmin || /^(system administrator|admin|sales|pre[\s-]?sales)(\s|$)/i.test(profile.name),
+    );
+    const base = getPublicApiUrl(req);
+    res.json({
+      success: true,
+      ok: true,
+      data: {
+        tables: {
+          telephonySettings: settingsTablePresent,
+          telephonyAgentPermissions: agentPermissionTablePresent,
+        },
+        permissionProfiles: defaultProfiles.map((profile) => ({
+          name: profile.name,
+          granted: profile.profilePermissions.some(({ permission }) => permission.name === 'TELEPHONY_CALL'),
+        })),
+        encryptionSecretPresent: Boolean(process.env.API_KEY_ENCRYPTION_SECRET),
+        keySaved: Boolean(settings?.encryptedCredentials),
+        apiBaseUrl: base.baseUrl || null,
+        apiBaseUrlSource: base.source,
+        dialpadUrl: settings?.dialpadUrl || 'https://bizcall.cxteletech.com/embed/dialpad',
+      },
+    });
+  } catch (error) {
+    console.error('Telephony environment check failed', error instanceof Error ? error.name : 'error');
+    res.status(503).json({
+      success: false,
+      ok: false,
+      code: 'ENVIRONMENT_CHECK_UNAVAILABLE',
+      message: 'The telephony environment check could not complete.',
+    });
+  }
+});
 
 function settingsFailure(error: unknown) {
   if (error instanceof z.ZodError) {
@@ -315,6 +390,52 @@ router.put('/agents', async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error('Update telephony agents error', error instanceof Error ? error.name : 'error');
     res.status(500).json({ success: false, ok: false, code: 'AGENTS_UPDATE_FAILED', message: 'Failed to update telephony agent access.' });
+  }
+});
+
+router.put('/agents/grant-default-profiles', async (req: AuthRequest, res: Response) => {
+  try {
+    const permission = await prisma.permission.findUnique({ where: { name: 'TELEPHONY_CALL' }, select: { id: true } });
+    if (!permission) {
+      return res.status(500).json({
+        success: false,
+        ok: false,
+        code: 'PERMISSION_UNAVAILABLE',
+        message: 'TELEPHONY_CALL permission is not configured. Apply database migrations first.',
+      });
+    }
+    const profiles = await prisma.profile.findMany({
+      where: {
+        tenantId: req.tenantId!,
+        OR: [
+          { isAdmin: true },
+          { name: { in: ['Admin', 'Sales', 'Presales', 'Pre-Sales', 'System Administrator'], mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true, name: true },
+    });
+    await prisma.$transaction(async (tx) => {
+      await tx.userProfilePermission.createMany({
+        data: profiles.map(({ id }) => ({ profileId: id, permissionId: permission.id })),
+        skipDuplicates: true,
+      });
+    });
+    await auditLog(req.tenantId!, req.user!.id, 'TELEPHONY_DEFAULT_PROFILES_GRANTED', 'Permission', permission.id, undefined, {
+      profileNames: profiles.map(({ name }) => name),
+    });
+    return res.json({
+      success: true,
+      ok: true,
+      data: { grantedProfiles: profiles.map(({ name }) => name) },
+    });
+  } catch (error) {
+    console.error('Grant default telephony profiles failed', error instanceof Error ? error.name : 'error');
+    return res.status(500).json({
+      success: false,
+      ok: false,
+      code: 'DEFAULT_PROFILE_GRANT_FAILED',
+      message: 'Failed to grant telephony access to the default profiles.',
+    });
   }
 });
 

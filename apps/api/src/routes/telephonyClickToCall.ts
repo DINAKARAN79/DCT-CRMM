@@ -8,6 +8,7 @@ import { DEFAULT_DIALPAD_URL } from '../services/telephonyUrl';
 import { canAccessLead } from '../services/recordAccess';
 import { normalizeLeadPhone } from '../services/leadDuplicateDetection';
 import { applyCallLogStatusRule } from '../services/callLogStatus';
+import { decryptTelephonyToken, TelephonyCredentialError } from '../services/telephonyCredentials';
 
 const router = Router();
 router.use(authenticate);
@@ -56,17 +57,46 @@ function reserveDialpadCall(userId: string, leadId: string, now: number, duplica
 
 router.get('/client-config', async (req: AuthRequest, res: Response) => {
   res.setHeader('Cache-Control', 'no-store');
-  if (!(await EffectivePermissionService.hasPermission(req.user!.id, 'TELEPHONY_CALL'))) {
-    return res.status(403).json({ success: false, ok: false, code: 'NO_PERMISSION', message: 'Telephony permission is required.' });
-  }
   try {
+    if (!(await EffectivePermissionService.hasPermission(req.user!.id, 'TELEPHONY_CALL'))) {
+      return res.json({
+        success: true,
+        ok: false,
+        data: { active: false, reasonCode: 'NO_PERMISSION' },
+      });
+    }
     const settings = await prisma.telephonySetting.findUnique({ where: { tenantId: req.tenantId! } });
+    if (!settings) {
+      return res.json({ success: true, ok: false, data: { active: false, reasonCode: 'NOT_CONFIGURED' } });
+    }
+    if (!settings.isActive) {
+      return res.json({ success: true, ok: false, data: { active: false, reasonCode: 'DISABLED' } });
+    }
+    if (!settings.encryptedCredentials) {
+      return res.json({ success: true, ok: false, data: { active: false, reasonCode: 'KEY_MISSING' } });
+    }
+    try {
+      decryptTelephonyToken(settings.encryptedCredentials);
+    } catch (error) {
+      if (error instanceof TelephonyCredentialError) {
+        return res.json({
+          success: true,
+          ok: false,
+          data: {
+            active: false,
+            reasonCode: 'KEY_UNREADABLE',
+          },
+        });
+      }
+      throw error;
+    }
     const dialpadUrl = settings?.dialpadUrl || DEFAULT_DIALPAD_URL;
     return res.json({
       success: true,
       ok: true,
       data: {
-        active: Boolean(settings?.isActive && settings.encryptedCredentials),
+        active: true,
+        reasonCode: 'ACTIVE',
         dialpadUrl,
         dialpadOrigin: new URL(dialpadUrl).origin,
         dialpadMode: settings?.dialpadMode || 'DOCKED',
@@ -78,7 +108,12 @@ router.get('/client-config', async (req: AuthRequest, res: Response) => {
     });
   } catch (error) {
     console.error('Telephony client config error', error instanceof Error ? error.name : 'error');
-    return res.status(500).json({ success: false, ok: false, code: 'TELEPHONY_CONFIG_UNAVAILABLE', message: 'Telephony settings could not be loaded.' });
+    return res.status(503).json({
+      success: false,
+      ok: false,
+      code: 'TELEPHONY_CONFIG_UNAVAILABLE',
+      message: 'Telephony settings could not be loaded.',
+    });
   }
 });
 

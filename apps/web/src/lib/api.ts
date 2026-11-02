@@ -664,6 +664,8 @@ export const searchApi = {
 export const telephonySettingsApi = {
   get: (tenantId?: string) =>
     api.get<ApiResponse>('/api/setup/telephony', { params: tenantId ? { tenantId } : undefined }),
+  environmentCheck: (tenantId?: string) =>
+    api.get<ApiResponse>('/api/setup/telephony/environment-check', { params: tenantId ? { tenantId } : undefined }),
   update: (data: Record<string, unknown>, tenantId?: string) =>
     api.put<ApiResponse>('/api/setup/telephony', data, { params: tenantId ? { tenantId } : undefined }),
   checkEmbedding: (origin: string, tenantId?: string) =>
@@ -676,6 +678,8 @@ export const telephonySettingsApi = {
     api.get<ApiResponse>('/api/setup/telephony/agents', { params: tenantId ? { tenantId } : undefined }),
   updateAgents: (data: { userIds?: string[]; profileId?: string; enabled: boolean }, tenantId?: string) =>
     api.put<ApiResponse>('/api/setup/telephony/agents', data, { params: tenantId ? { tenantId } : undefined }),
+  grantDefaultProfiles: (tenantId?: string) =>
+    api.put<ApiResponse>('/api/setup/telephony/agents/grant-default-profiles', {}, { params: tenantId ? { tenantId } : undefined }),
   logs: (tenantId?: string) =>
     api.get<ApiResponse>('/api/setup/telephony/logs', { params: tenantId ? { tenantId } : undefined }),
 };

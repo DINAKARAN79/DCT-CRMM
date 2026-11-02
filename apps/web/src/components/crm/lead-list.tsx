@@ -17,6 +17,7 @@ import { DataTable } from "@/components/crm/data-table";
 import { format } from "date-fns";
 
 import { MoreHorizontal, Eye, Edit, Phone, Trash2 } from "lucide-react";
+import { TelephonyStatusHint } from "@/components/crm/telephony-status-hint";
 
 import {
   DropdownMenu,
@@ -53,6 +54,8 @@ interface LeadListProps {
   canCall?: boolean;
   onCall?: (lead: Lead) => void;
   callingLeadId?: string | null;
+  telephonyReasonCode?: string;
+  isAdmin?: boolean;
   sorting?: { id: string; desc: boolean }[];
   onSortingChange?: (sorting: { id: string; desc: boolean }[]) => void;
 }
@@ -73,12 +76,16 @@ export function getLeadColumns({
   canCall = false,
   onCall,
   callingLeadId = null,
+  telephonyReasonCode = "NOT_CONFIGURED",
+  isAdmin = false,
 }: {
   canDelete?: boolean;
   onDelete?: (lead: Lead) => void | Promise<void>;
   canCall?: boolean;
   onCall?: (lead: Lead) => void;
   callingLeadId?: string | null;
+  telephonyReasonCode?: string;
+  isAdmin?: boolean;
 } = {}): ColumnDef<Lead>[] {
   return [
     {
@@ -128,9 +135,10 @@ export function getLeadColumns({
         const calling = callingLeadId === row.original.id;
         if (!canCall || !phone || !onCall) {
           return (
-            <span className="inline-flex items-center gap-2 whitespace-nowrap text-[#1479a8]">
+            <span className="inline-flex items-center gap-1 whitespace-nowrap text-[#1479a8]">
               <Phone className="h-3.5 w-3.5 fill-sky-100" />
               {phone || "—"}
+              {phone ? <TelephonyStatusHint reasonCode={telephonyReasonCode} isAdmin={isAdmin} /> : null}
             </span>
           );
         }
@@ -246,12 +254,14 @@ export function LeadList({
   canCall = false,
   onCall,
   callingLeadId = null,
+  telephonyReasonCode = "NOT_CONFIGURED",
+  isAdmin = false,
   sorting,
   onSortingChange,
 }: LeadListProps) {
   const columns = React.useMemo(
-    () => getLeadColumns({ canDelete, onDelete, canCall, onCall, callingLeadId }),
-    [canDelete, onDelete, canCall, onCall, callingLeadId],
+    () => getLeadColumns({ canDelete, onDelete, canCall, onCall, callingLeadId, telephonyReasonCode, isAdmin }),
+    [canDelete, onDelete, canCall, onCall, callingLeadId, telephonyReasonCode, isAdmin],
   );
 
   return (

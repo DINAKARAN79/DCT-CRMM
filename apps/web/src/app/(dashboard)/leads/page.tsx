@@ -9,7 +9,7 @@ import { useRouter } from "next/navigation";
 import { leadApi } from "@/lib/api";
 import { clickToCallToast } from "@/lib/click-to-call";
 import { requestLeadCall } from "@/lib/telephony-client";
-import { maskTelephonyNumber, useTelephonyActive, useTelephonyNumberMasking } from "@/lib/telephony-client";
+import { maskTelephonyNumber, useTelephonyActive, useTelephonyNumberMasking, useTelephonyReasonCode } from "@/lib/telephony-client";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 
@@ -63,6 +63,7 @@ export default function LeadsPage() {
   const router = useRouter();
   const listViews = useListView("LEAD");
   const telephonyActive = useTelephonyActive();
+  const telephonyReasonCode = useTelephonyReasonCode();
   const maskNumbers = useTelephonyNumberMasking();
   const [leads, setLeads] = React.useState<Lead[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
@@ -259,6 +260,8 @@ export default function LeadsPage() {
         canDelete={canDeleteLead}
         onDelete={handleDeleteLead}
         canCall={canCall}
+        telephonyReasonCode={telephonyReasonCode}
+        isAdmin={Boolean(isAdmin || isSuperAdmin)}
         callingLeadId={callingLeadId}
         onCall={(lead) => { void callLead(lead); }}
         sorting={listViews.sorting ? [listViews.sorting] : []}

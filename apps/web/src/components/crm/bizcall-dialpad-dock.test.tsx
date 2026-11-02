@@ -34,7 +34,7 @@ vi.mock("@/lib/telephony-client", () => ({
     dockMocks.dialHandler = handler;
     return () => { dockMocks.dialHandler = undefined; };
   },
-  setTelephonyActive: vi.fn(),
+  setTelephonyStatus: vi.fn(),
   setTelephonyNumberMasking: vi.fn(),
 }));
 

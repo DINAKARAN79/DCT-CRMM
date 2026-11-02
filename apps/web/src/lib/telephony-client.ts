@@ -11,6 +11,7 @@ type DialHandler = (request: DialRequest) => Promise<ClickToCallOutcome>;
 
 let dialHandler: DialHandler | null = null;
 let telephonyIsActive = false;
+let telephonyReasonCode = "NOT_CONFIGURED";
 let shouldMaskNumbers = false;
 const activeListeners = new Set<() => void>();
 
@@ -39,8 +40,13 @@ export function requestLeadCall(request: DialRequest): Promise<ClickToCallOutcom
 }
 
 export function setTelephonyActive(active: boolean) {
-  if (telephonyIsActive === active) return;
+  setTelephonyStatus(active, active ? "ACTIVE" : telephonyReasonCode);
+}
+
+export function setTelephonyStatus(active: boolean, reasonCode: string) {
+  if (telephonyIsActive === active && telephonyReasonCode === reasonCode) return;
   telephonyIsActive = active;
+  telephonyReasonCode = reasonCode;
   activeListeners.forEach((listener) => listener());
 }
 
@@ -71,6 +77,17 @@ export function useTelephonyActive() {
     },
     () => telephonyIsActive,
     () => false,
+  );
+}
+
+export function useTelephonyReasonCode() {
+  return useSyncExternalStore(
+    (listener) => {
+      activeListeners.add(listener);
+      return () => activeListeners.delete(listener);
+    },
+    () => telephonyReasonCode,
+    () => "NOT_CONFIGURED",
   );
 }
 

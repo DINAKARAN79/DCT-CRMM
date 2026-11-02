@@ -1,5 +1,5 @@
 export const DEFAULT_CLICK_TO_CALL_URL = 'https://bizcall.cxteletech.com/api/integration/click2call';
-export const DEFAULT_DIALPAD_URL = 'https://bizcall.cxteletech.com/embed/dialpad';
+export const DEFAULT_DIALPAD_URL = process.env.DIALPAD_URL?.trim() || 'https://bizcall.cxteletech.com/embed/dialpad';
 
 export class TelephonyUrlError extends Error {
   constructor(message: string) {

@@ -47,6 +47,16 @@ type Probe = {
   reason?: string;
 };
 
+type EnvironmentCheck = {
+  tables: { telephonySettings: boolean; telephonyAgentPermissions: boolean };
+  permissionProfiles: Array<{ name: string; granted: boolean }>;
+  encryptionSecretPresent: boolean;
+  keySaved: boolean;
+  apiBaseUrl: string | null;
+  apiBaseUrlSource: string;
+  dialpadUrl: string;
+};
+
 function errorMessage(error: unknown, fallback: string) {
   if (typeof error !== "object" || error === null) return fallback;
   const value = error as { message?: string; response?: { data?: { message?: string; error?: string } } };
@@ -76,6 +86,9 @@ export default function TelephonySettingsPage() {
   const [allowTestUrl, setAllowTestUrl] = React.useState(false);
   const [callIdFieldPath, setCallIdFieldPath] = React.useState("");
   const [probe, setProbe] = React.useState<Probe | null>(null);
+  const [environment, setEnvironment] = React.useState<EnvironmentCheck | null>(null);
+  const [securePage, setSecurePage] = React.useState<boolean | null>(null);
+  const [grantingProfiles, setGrantingProfiles] = React.useState(false);
   const [dialpadUrl, setDialpadUrl] = React.useState(DEFAULT_DIALPAD_URL);
   const [dialpadMode, setDialpadMode] = React.useState<"DOCKED" | "NEW_TAB">("DOCKED");
   const [callMethod, setCallMethod] = React.useState<"SERVER_API" | "DIALPAD_MESSAGE">("SERVER_API");
@@ -192,6 +205,40 @@ export default function TelephonySettingsPage() {
   }, [isAdmin, isAuthenticated, isSuperAdmin, tenantId, toast]);
 
   React.useEffect(() => {
+    if (typeof window !== "undefined") {
+      const hostname = window.location.hostname;
+      const localHost = process.env.NODE_ENV !== "production" && (
+        hostname === "localhost" || hostname === "::1" ||
+        (hostname.split(".").length === 4 && Number(hostname.split(".")[0]) === 127)
+      );
+      setSecurePage(window.location.protocol === "https:" || localHost);
+    }
+    if (!isAuthenticated || (!isAdmin && !isSuperAdmin) || (isSuperAdmin && !tenantId)) return;
+    let active = true;
+    telephonySettingsApi.environmentCheck(tenantId || undefined)
+      .then((response) => {
+        if (active && response.data.data) setEnvironment(response.data.data as EnvironmentCheck);
+      })
+      .catch((error: unknown) => {
+        if (active) toast({ title: "Environment check unavailable", description: errorMessage(error, "Unable to inspect telephony deployment settings."), variant: "destructive" });
+      });
+    if (typeof window !== "undefined") {
+      telephonySettingsApi.checkEmbedding(window.location.origin, tenantId || undefined)
+        .then((response) => {
+          if (active && response.data.data) setEmbeddingResult(response.data.data as NonNullable<typeof embeddingResult>);
+        })
+        .catch(() => {
+          if (active) setEmbeddingResult({
+            verdict: "Unable to verify whether Bizcall allows this CRM origin.",
+            httpStatus: 0,
+            headers: { xFrameOptions: null, contentSecurityPolicy: null, frameAncestors: null },
+          });
+        });
+    }
+    return () => { active = false; };
+  }, [isAdmin, isAuthenticated, isSuperAdmin, tenantId, toast]);
+
+  React.useEffect(() => {
     if (!isDirty) return;
     const beforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -254,6 +301,12 @@ export default function TelephonySettingsPage() {
       }, tenantId || undefined);
       if (response.data.data) applySettings(response.data.data as TelephonySettings);
       toast({ title: "Telephony saved", description: "Click-to-call will use these settings." });
+      try {
+        const environmentResponse = await telephonySettingsApi.environmentCheck(tenantId || undefined);
+        if (environmentResponse.data.data) setEnvironment(environmentResponse.data.data as EnvironmentCheck);
+      } catch (error: unknown) {
+        toast({ title: "Environment check unavailable", description: errorMessage(error, "Unable to refresh deployment diagnostics."), variant: "destructive" });
+      }
     } catch (error: unknown) {
       toast({
         title: "Unable to save telephony",
@@ -288,13 +341,25 @@ export default function TelephonySettingsPage() {
     }
   };
 
-  const saveProfileAccess = async (profileId: string, enabled: boolean) => {
+  const grantDefaultProfiles = async () => {
+    setGrantingProfiles(true);
     try {
-      await telephonySettingsApi.updateAgents({ profileId, enabled }, tenantId || undefined);
-      const response = await telephonySettingsApi.agents(tenantId || undefined);
-      setAgents(Array.isArray(response.data.data) ? response.data.data as typeof agents : []);
+      await telephonySettingsApi.grantDefaultProfiles(tenantId || undefined);
+      toast({ title: "Telephony access granted", description: "Admin, Sales and Presales profiles can now place calls." });
+      try {
+        const [agentsResponse, environmentResponse] = await Promise.all([
+          telephonySettingsApi.agents(tenantId || undefined),
+          telephonySettingsApi.environmentCheck(tenantId || undefined),
+        ]);
+        setAgents(Array.isArray(agentsResponse.data.data) ? agentsResponse.data.data as typeof agents : []);
+        if (environmentResponse.data.data) setEnvironment(environmentResponse.data.data as EnvironmentCheck);
+      } catch (error: unknown) {
+        toast({ title: "Unable to refresh telephony status", description: errorMessage(error, "Access was granted but status could not be refreshed."), variant: "destructive" });
+      }
     } catch (error: unknown) {
-      toast({ title: "Unable to update profile access", description: errorMessage(error, "Failed to update telephony access."), variant: "destructive" });
+      toast({ title: "Unable to grant telephony access", description: errorMessage(error, "Failed to update profile permissions."), variant: "destructive" });
+    } finally {
+      setGrantingProfiles(false);
     }
   };
 
@@ -393,6 +458,53 @@ export default function TelephonySettingsPage() {
               Active
             </label>
             {!hasKey && !authToken.trim() ? <p className="text-xs text-amber-700">Add a Bizcall API key before enabling telephony.</p> : null}
+          </section>
+
+          {isAdmin || isSuperAdmin ? (
+            <section className="space-y-3 rounded-xl border bg-card p-5 shadow-sm">
+              <h2 className="font-medium">Environment check</h2>
+              <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                <div><dt className="text-muted-foreground">Database tables present</dt><dd>telephony_settings: {environment?.tables.telephonySettings ? "Yes" : "No"} · telephony_agent_permissions: {environment?.tables.telephonyAgentPermissions ? "Yes" : "No"}</dd></div>
+                <div>
+                  <dt className="text-muted-foreground">TELEPHONY_CALL permission</dt>
+                  <dd>{environment ? environment.permissionProfiles.filter((profile) => profile.granted).map((profile) => profile.name).join(", ") || "No default profile has it" : "Checking…"}</dd>
+                </div>
+                <div><dt className="text-muted-foreground">Encryption secret present</dt><dd>{environment ? (environment.encryptionSecretPresent ? "Yes" : "No") : "Checking…"} (value is never shown)</dd></div>
+                <div><dt className="text-muted-foreground">Bizcall key saved</dt><dd>{environment ? (environment.keySaved ? "Yes" : "No") : "Checking…"}</dd></div>
+                <div><dt className="text-muted-foreground">Page served over HTTPS</dt><dd>{securePage === null ? "Checking…" : securePage ? "Yes" : "No — microphones are blocked on plain HTTP."}</dd></div>
+                <div className="min-w-0"><dt className="text-muted-foreground">API base URL detected</dt><dd className="break-all">{environment?.apiBaseUrl || "Unavailable"}{environment?.apiBaseUrlSource ? ` (${environment.apiBaseUrlSource})` : ""}</dd></div>
+                <div><dt className="text-muted-foreground">Bizcall allows this iframe origin</dt><dd>{embeddingResult?.verdict || "Checking…"}<span className="mt-1 block break-all text-xs text-muted-foreground">{typeof window !== "undefined" ? window.location.origin : ""}</span></dd></div>
+              </dl>
+              <p className="text-xs text-muted-foreground">For production microphone access, use an AWS Application Load Balancer or CloudFront with an ACM certificate and redirect HTTP to HTTPS.</p>
+            </section>
+          ) : null}
+          {securePage === false ? (
+            <p role="alert" className="rounded-md border border-amber-400 bg-amber-50 p-3 text-sm text-amber-950 dark:bg-amber-950 dark:text-amber-100">
+              Calls need HTTPS. Microphone access is blocked on plain HTTP.
+            </p>
+          ) : null}
+
+          <section className="space-y-3 rounded-xl border bg-card p-5 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="font-medium">Agents</h2>
+                <p className="text-sm text-muted-foreground">Users with TELEPHONY_CALL permission can place calls when company telephony is active.</p>
+              </div>
+              {isAdmin || isSuperAdmin ? <Button type="button" variant="outline" size="sm" disabled={grantingProfiles} onClick={() => void grantDefaultProfiles()}>{grantingProfiles ? "Granting…" : "Grant telephony to these profiles"}</Button> : null}
+            </div>
+            {agents.length ? (
+              <ul className="divide-y">
+                {agents.map((agent) => (
+                  <li key={agent.userId} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
+                    <span>{agent.userName} <span className="text-muted-foreground">({agent.profileName})</span></span>
+                    <span className="flex items-center gap-2">
+                      <span>{agent.canUseTelephony ? "Permission granted" : "No permission"}</span>
+                      {isAdmin || isSuperAdmin ? <Button type="button" variant="ghost" size="sm" onClick={() => void saveAgentAccess([agent.userId], !agent.canUseTelephony)}>{agent.canUseTelephony ? "Revoke" : "Grant"}</Button> : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="text-sm text-muted-foreground">No active agents found.</p>}
           </section>
 
           <form

@@ -7,7 +7,7 @@ import { useAuth } from "@/contexts/auth-context";
 import { clickToCallApi } from "@/lib/api";
 import { buildBizcallDialpadUrl, BIZCALL_DIALPAD_WINDOW_NAME, claimDialpadLock, isDialpadLockStale, isTrustedBizcallMessage, openBizcallDialpad, readDialpadLock } from "@/lib/bizcall-dialpad";
 import { placeLeadCall, type ClickToCallOutcome } from "@/lib/click-to-call";
-import { registerTelephonyDialHandler, setTelephonyActive, setTelephonyNumberMasking } from "@/lib/telephony-client";
+import { registerTelephonyDialHandler, setTelephonyNumberMasking, setTelephonyStatus } from "@/lib/telephony-client";
 import { Button } from "@/components/ui/button";
 
 type DialpadConfig = {
@@ -49,6 +49,8 @@ export function BizcallDialpadDock() {
   const showOnPage = !pathname.startsWith("/setup") || pathname === "/setup/integrations/telephony";
   const allowed = hasEffectivePermission("TELEPHONY_CALL");
   const [config, setConfig] = React.useState<DialpadConfig | null>(null);
+  const [reasonCode, setReasonCode] = React.useState("NOT_CONFIGURED");
+  const [secureTransport, setSecureTransport] = React.useState(true);
   const [expanded, setExpanded] = React.useState(false);
   const [online, setOnline] = React.useState(false);
   const [extension, setExtension] = React.useState("");
@@ -83,18 +85,31 @@ export function BizcallDialpadDock() {
   }, [user?.id]);
 
   React.useEffect(() => {
-    setTelephonyActive(Boolean(isAuthenticated && allowed && config?.active));
+    setTelephonyStatus(
+      Boolean(isAuthenticated && allowed && config?.active),
+      !isAuthenticated ? "NOT_CONFIGURED" : !allowed ? "NO_PERMISSION" : config?.active ? "ACTIVE" : reasonCode,
+    );
     setTelephonyNumberMasking(Boolean(isAuthenticated && allowed && config?.active && config.maskNumbers));
     return () => {
-      setTelephonyActive(false);
+      setTelephonyStatus(false, "NOT_CONFIGURED");
       setTelephonyNumberMasking(false);
     };
-  }, [allowed, config?.active, config?.maskNumbers, isAuthenticated]);
+  }, [allowed, config?.active, config?.maskNumbers, isAuthenticated, reasonCode]);
 
   React.useEffect(() => {
-    if (isLoading || !isAuthenticated || !allowed) {
+    if (typeof window !== "undefined") {
+      const hostname = window.location.hostname.toLowerCase();
+      const isLocal = process.env.NODE_ENV !== "production" && (
+        hostname === "localhost" || hostname === "::1" ||
+        (hostname.split(".").length === 4 && Number(hostname.split(".")[0]) === 127)
+      );
+      setSecureTransport(window.location.protocol === "https:" || isLocal);
+    }
+    if (isLoading) return;
+    if (!isAuthenticated) {
       setConfig(null);
       setOnline(false);
+      setReasonCode("NOT_CONFIGURED");
       return;
     }
     let active = true;
@@ -102,16 +117,25 @@ export function BizcallDialpadDock() {
       try {
         const response = await clickToCallApi.clientConfig();
         if (!active) return;
-        const data = response.data.data as DialpadConfig;
+        const data = response.data.data as DialpadConfig & { reasonCode?: string };
         if (data?.active && data.dialpadUrl && new URL(data.dialpadUrl).origin === data.dialpadOrigin) {
           setConfig(data);
+            setReasonCode("ACTIVE");
             if (!configRef.current) setExpanded(data.defaultDockState === "EXPANDED");
         } else {
-          setConfig(null);
-          setOnline(false);
+            setConfig(null);
+            setOnline(false);
+            setReasonCode(data?.reasonCode || "CONFIG_UNAVAILABLE");
         }
-      } catch {
-        if (active) setConfig(null);
+      } catch (error: unknown) {
+        if (active) {
+            setConfig(null);
+            setOnline(false);
+            const responseCode = error && typeof error === "object" && "response" in error
+              ? (error as { response?: { data?: { code?: string } } }).response?.data?.code
+              : undefined;
+            setReasonCode(responseCode === "TELEPHONY_CONFIG_UNAVAILABLE" ? "SETTINGS_UNAVAILABLE" : "PROXY_UNAVAILABLE");
+        }
       }
     };
     void load();
@@ -120,7 +144,7 @@ export function BizcallDialpadDock() {
       active = false;
       window.clearInterval(refresh);
     };
-  }, [allowed, isAuthenticated, isLoading]);
+  }, [isAuthenticated, isLoading]);
 
   React.useEffect(() => {
     if (!lockEnabled || !user?.id || !showOnPage) {
@@ -386,6 +410,13 @@ export function BizcallDialpadDock() {
   };
 
   if (isLoading || !isAuthenticated || !allowed || !config?.active || !showOnPage) return null;
+  if (!secureTransport) {
+    return (
+      <div role="alert" className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-amber-400 bg-amber-50 p-3 text-sm text-amber-950 shadow-lg dark:bg-amber-950 dark:text-amber-100">
+        Calls need HTTPS. Microphone access is blocked on plain HTTP.
+      </div>
+    );
+  }
   if (config.dialpadMode === "NEW_TAB") {
     return (
       <div className="fixed bottom-4 right-4 z-40 rounded-lg border bg-background p-3 text-xs shadow-lg">
