@@ -122,21 +122,26 @@ router.get('/client-config', async (req: AuthRequest, res: Response) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
     if (!(await EffectivePermissionService.hasPermission(req.user!.id, 'TELEPHONY_CALL'))) {
+      const permissionConfigured = await EffectivePermissionService.isTelephonyPermissionConfigured();
       return res.json({
         success: true,
         ok: false,
-        data: { active: false, reasonCode: 'NO_PERMISSION' },
+        data: {
+          active: false,
+          permissionGranted: false,
+          reasonCode: permissionConfigured ? 'NO_PERMISSION' : 'PERMISSION_UNAVAILABLE',
+        },
       });
     }
     const settings = await prisma.telephonySetting.findUnique({ where: { tenantId: req.tenantId! } });
     if (!settings) {
-      return res.json({ success: true, ok: false, data: { active: false, reasonCode: 'NOT_CONFIGURED' } });
+      return res.json({ success: true, ok: false, data: { active: false, permissionGranted: true, reasonCode: 'NOT_CONFIGURED' } });
     }
     if (!settings.isActive) {
-      return res.json({ success: true, ok: false, data: { active: false, reasonCode: 'DISABLED' } });
+      return res.json({ success: true, ok: false, data: { active: false, permissionGranted: true, reasonCode: 'DISABLED' } });
     }
     if (!settings.encryptedCredentials) {
-      return res.json({ success: true, ok: false, data: { active: false, reasonCode: 'KEY_MISSING' } });
+      return res.json({ success: true, ok: false, data: { active: false, permissionGranted: true, reasonCode: 'KEY_MISSING' } });
     }
     try {
       decryptTelephonyToken(settings.encryptedCredentials);
@@ -147,6 +152,7 @@ router.get('/client-config', async (req: AuthRequest, res: Response) => {
           ok: false,
           data: {
             active: false,
+            permissionGranted: true,
             reasonCode: 'KEY_UNREADABLE',
           },
         });
@@ -159,6 +165,7 @@ router.get('/client-config', async (req: AuthRequest, res: Response) => {
       ok: true,
       data: {
         active: true,
+        permissionGranted: true,
         reasonCode: 'ACTIVE',
         dialpadUrl,
         dialpadOrigin: new URL(dialpadUrl).origin,

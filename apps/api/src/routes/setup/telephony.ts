@@ -30,6 +30,31 @@ function requireAdministrator(req: AuthRequest, res: Response, next: NextFunctio
   next();
 }
 
+const TELEPHONY_PERMISSION_UNAVAILABLE_MESSAGE =
+  'TELEPHONY_CALL is missing from public."Permission"."name". Run scripts/repair-telephony-permission.sql as described in TELEPHONY_AWS_FIX.md.';
+
+function isMissingPermissionTable(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    error.code === 'P2021' &&
+    'meta' in error &&
+    String((error.meta as { table?: unknown } | undefined)?.table || '').includes('Permission'),
+  );
+}
+
+function permissionUnavailableResponse(res: Response, tableMissing = false) {
+  return res.status(503).json({
+    success: false,
+    ok: false,
+    code: 'PERMISSION_UNAVAILABLE',
+    message: tableMissing
+      ? 'The public."Permission" table is missing. Run scripts/repair-telephony-permission.sql as described in TELEPHONY_AWS_FIX.md.'
+      : TELEPHONY_PERMISSION_UNAVAILABLE_MESSAGE,
+  });
+}
+
 router.use(requireAdministrator);
 
 function getPublicApiUrl(req: AuthRequest) {
@@ -346,10 +371,14 @@ router.put('/agents', async (req: AuthRequest, res: Response) => {
   }
   try {
     const permission = await prisma.permission.findUnique({ where: { name: 'TELEPHONY_CALL' }, select: { id: true } });
-    if (!permission) return res.status(500).json({ success: false, ok: false, code: 'PERMISSION_UNAVAILABLE', message: 'TELEPHONY_CALL permission is not configured.' });
+    if (!permission) return permissionUnavailableResponse(res);
     if (body.data.profileId) {
       const profile = await prisma.profile.findFirst({ where: { id: body.data.profileId, tenantId: req.tenantId! }, select: { id: true } });
       if (!profile) return res.status(404).json({ success: false, ok: false, code: 'PROFILE_NOT_FOUND', message: 'Profile not found.' });
+      const profileUsers = await prisma.user.findMany({
+        where: { tenantId: req.tenantId!, profileId: profile.id, isSuperAdmin: false },
+        select: { id: true },
+      });
       await prisma.$transaction(async (tx) => {
         if (body.data.enabled) {
           await tx.userProfilePermission.upsert({
@@ -361,6 +390,7 @@ router.put('/agents', async (req: AuthRequest, res: Response) => {
           await tx.userProfilePermission.deleteMany({ where: { profileId: profile.id, permissionId: permission.id } });
         }
       });
+      EffectivePermissionService.invalidateUserPermissionsCache(profileUsers.map(({ id }) => id));
     } else {
       const userIds = [...new Set(body.data.userIds || [])];
       const users = await prisma.user.findMany({ where: { id: { in: userIds }, tenantId: req.tenantId!, isSuperAdmin: false }, select: { id: true } });
@@ -380,6 +410,7 @@ router.put('/agents', async (req: AuthRequest, res: Response) => {
           await tx.userDirectPermission.deleteMany({ where: { userId: { in: userIds }, permissionId: permission.id } });
         }
       });
+      EffectivePermissionService.invalidateUserPermissionsCache(userIds);
     }
     await auditLog(req.tenantId!, req.user!.id, 'TELEPHONY_AGENT_PERMISSIONS_UPDATED', 'TelephonySetting', req.tenantId!, undefined, {
       profileId: body.data.profileId || null,
@@ -389,6 +420,7 @@ router.put('/agents', async (req: AuthRequest, res: Response) => {
     res.json({ success: true, ok: true, message: 'Telephony agent access updated.' });
   } catch (error) {
     console.error('Update telephony agents error', error instanceof Error ? error.name : 'error');
+    if (isMissingPermissionTable(error)) return permissionUnavailableResponse(res, true);
     res.status(500).json({ success: false, ok: false, code: 'AGENTS_UPDATE_FAILED', message: 'Failed to update telephony agent access.' });
   }
 });
@@ -396,14 +428,7 @@ router.put('/agents', async (req: AuthRequest, res: Response) => {
 router.put('/agents/grant-default-profiles', async (req: AuthRequest, res: Response) => {
   try {
     const permission = await prisma.permission.findUnique({ where: { name: 'TELEPHONY_CALL' }, select: { id: true } });
-    if (!permission) {
-      return res.status(500).json({
-        success: false,
-        ok: false,
-        code: 'PERMISSION_UNAVAILABLE',
-        message: 'TELEPHONY_CALL permission is not configured. Apply database migrations first.',
-      });
-    }
+    if (!permission) return permissionUnavailableResponse(res);
     const profiles = await prisma.profile.findMany({
       where: {
         tenantId: req.tenantId!,
@@ -414,12 +439,19 @@ router.put('/agents/grant-default-profiles', async (req: AuthRequest, res: Respo
       },
       select: { id: true, name: true },
     });
+    const profileUsers = profiles.length
+      ? await prisma.user.findMany({
+          where: { tenantId: req.tenantId!, profileId: { in: profiles.map(({ id }) => id) }, isActive: true, isSuperAdmin: false },
+          select: { id: true },
+        })
+      : [];
     await prisma.$transaction(async (tx) => {
       await tx.userProfilePermission.createMany({
         data: profiles.map(({ id }) => ({ profileId: id, permissionId: permission.id })),
         skipDuplicates: true,
       });
     });
+    EffectivePermissionService.invalidateUserPermissionsCache(profileUsers.map(({ id }) => id));
     await auditLog(req.tenantId!, req.user!.id, 'TELEPHONY_DEFAULT_PROFILES_GRANTED', 'Permission', permission.id, undefined, {
       profileNames: profiles.map(({ name }) => name),
     });
@@ -430,6 +462,7 @@ router.put('/agents/grant-default-profiles', async (req: AuthRequest, res: Respo
     });
   } catch (error) {
     console.error('Grant default telephony profiles failed', error instanceof Error ? error.name : 'error');
+    if (isMissingPermissionTable(error)) return permissionUnavailableResponse(res, true);
     return res.status(500).json({
       success: false,
       ok: false,

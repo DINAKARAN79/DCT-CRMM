@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const placed = vi.hoisted(() => vi.fn());
 const dialpadMocks = vi.hoisted(() => ({
   hasPermission: vi.fn().mockResolvedValue(true),
+  permissionConfigured: vi.fn().mockResolvedValue(true),
   findLead: vi.fn(),
   findCall: vi.fn(),
   updateCall: vi.fn(),
@@ -43,7 +44,10 @@ vi.mock('@dct-crm/db', () => ({
 }));
 
 vi.mock('../services/effectivePermissions', () => ({
-  EffectivePermissionService: { hasPermission: dialpadMocks.hasPermission },
+  EffectivePermissionService: {
+    hasPermission: dialpadMocks.hasPermission,
+    isTelephonyPermissionConfigured: dialpadMocks.permissionConfigured,
+  },
 }));
 
 vi.mock('../services/recordAccess', () => ({
@@ -101,6 +105,7 @@ afterEach(async () => {
   dialpadMocks.appendNote.mockReset();
   dialpadMocks.settingsFindUnique.mockReset();
   dialpadMocks.hasPermission.mockReset().mockResolvedValue(true);
+  dialpadMocks.permissionConfigured.mockReset().mockResolvedValue(true);
   dialpadMocks.canAccessLead.mockReset().mockResolvedValue(true);
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
@@ -163,6 +168,18 @@ describe('GET /api/telephony/client-config', () => {
     expect(await active.json()).toMatchObject({
       ok: true,
       data: { active: true, reasonCode: 'ACTIVE' },
+    });
+  });
+
+  it('distinguishes a missing permission definition from a missing user grant', async () => {
+    dialpadMocks.hasPermission.mockResolvedValue(false);
+    dialpadMocks.permissionConfigured.mockResolvedValue(false);
+
+    const response = await getClientConfig();
+
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      data: { active: false, permissionGranted: false, reasonCode: 'PERMISSION_UNAVAILABLE' },
     });
   });
 

@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TelephonyAgentPermission, User } from '@prisma/client';
+import type { Permission, TelephonyAgentPermission, User } from '@prisma/client';
 
 vi.mock('@dct-crm/db', () => ({
   prisma: {
     user: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
+    },
+    permission: {
+      findUnique: vi.fn(),
     },
     telephonyAgentPermission: {
       findUnique: vi.fn(),
@@ -42,6 +45,18 @@ import { reconcileObjectPermissionsForPermissionIds, reconcilePermissionIdsForOb
 describe('effective field permissions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    const telephonyPermission: Permission = {
+      id: 'perm-telephony-call',
+      name: 'TELEPHONY_CALL',
+      label: 'Click to call',
+      module: 'TELEPHONY',
+      action: 'CALL',
+      description: 'Place an outbound click-to-call from a lead',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    vi.mocked(prisma.permission.findUnique).mockResolvedValue(telephonyPermission);
   });
 
   it('merges profile and permission set field permissions', async () => {
@@ -156,6 +171,32 @@ describe('effective field permissions', () => {
       where: { tenantId_userId: { tenantId: 'tenant-1', userId: 'user-1' } },
       select: { canUse: true },
     });
+  });
+
+  it('treats a missing telephony permission definition as not granted and warns once', async () => {
+    vi.mocked(prisma.permission.findUnique).mockResolvedValue(null);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(EffectivePermissionService.hasPermission('user-1', 'TELEPHONY_CALL')).resolves.toBe(false);
+    await expect(EffectivePermissionService.hasPermission('user-2', 'TELEPHONY_CALL')).resolves.toBe(false);
+
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('public."Permission"."name"'));
+    warning.mockRestore();
+  });
+
+  it('invalidates cached permission results after a user grant changes', async () => {
+    const owner = {};
+    const calculate = vi.spyOn(EffectivePermissionService, 'getEffectivePermissions').mockResolvedValue([]);
+
+    await EffectivePermissionService.getEffectivePermissionsCached(owner, 'user-1');
+    await EffectivePermissionService.getEffectivePermissionsCached(owner, 'user-1');
+    expect(calculate).toHaveBeenCalledTimes(1);
+
+    EffectivePermissionService.invalidateUserPermissionsCache(['user-1']);
+    await EffectivePermissionService.getEffectivePermissionsCached(owner, 'user-1');
+    expect(calculate).toHaveBeenCalledTimes(2);
+    calculate.mockRestore();
   });
 
   it('removes stale create permission IDs when object access is set to read-only', () => {

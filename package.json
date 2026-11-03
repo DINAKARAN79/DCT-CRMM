@@ -26,6 +26,8 @@
     "db:migrate": "npm run db:migrate --workspace=packages/db",
     "db:seed": "npm run db:seed --workspace=packages/db",
     "db:studio": "npm run db:studio --workspace=packages/db",
+    "db:repair-telephony": "node scripts/telephony-db-sql.mjs repair",
+    "postdeploy:check-telephony": "sh scripts/check-telephony-permission.sh",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {

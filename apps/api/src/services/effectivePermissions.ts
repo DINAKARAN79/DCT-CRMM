@@ -26,7 +26,7 @@ export interface PermissionCheckResult {
 
 const FULL_SYSTEM_ACCESS = 'FULL_SYSTEM_ACCESS';
 
-type PermissionCacheBag = Map<string, Promise<EffectivePermission[]>>;
+type PermissionCacheBag = Map<string, { revision: number; permissions: Promise<EffectivePermission[]> }>;
 
 export class EffectivePermissionService {
   /**
@@ -36,6 +36,8 @@ export class EffectivePermissionService {
    * cross-request staleness.
    */
   private static readonly requestCaches = new WeakMap<object, PermissionCacheBag>();
+  private static permissionCacheRevision = 0;
+  private static telephonyPermissionWarningLogged = false;
 
   static getEffectivePermissionsCached(owner: object, userId: string): Promise<EffectivePermission[]> {
     let bag = this.requestCaches.get(owner);
@@ -43,12 +45,50 @@ export class EffectivePermissionService {
       bag = new Map();
       this.requestCaches.set(owner, bag);
     }
-    let pending = bag.get(userId);
-    if (!pending) {
-      pending = this.getEffectivePermissions(userId);
-      bag.set(userId, pending);
+    let cached = bag.get(userId);
+    if (!cached || cached.revision !== this.permissionCacheRevision) {
+      cached = {
+        revision: this.permissionCacheRevision,
+        permissions: this.getEffectivePermissions(userId),
+      };
+      bag.set(userId, cached);
     }
-    return pending;
+    return cached.permissions;
+  }
+
+  static invalidateUserPermissionsCache(userIds: string[]) {
+    if (userIds.length) this.permissionCacheRevision += 1;
+  }
+
+  static async isTelephonyPermissionConfigured(): Promise<boolean> {
+    try {
+      const permission = await prisma.permission.findUnique({
+        where: { name: 'TELEPHONY_CALL' },
+        select: { id: true },
+      });
+      if (permission) return true;
+      this.warnTelephonyPermissionUnavailable('public."Permission"."name" = TELEPHONY_CALL');
+      return false;
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        error.code === 'P2021' &&
+        'meta' in error &&
+        String((error.meta as { table?: unknown } | undefined)?.table || '').includes('Permission')
+      ) {
+        this.warnTelephonyPermissionUnavailable('public."Permission" table');
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private static warnTelephonyPermissionUnavailable(objectName: string) {
+    if (this.telephonyPermissionWarningLogged) return;
+    this.telephonyPermissionWarningLogged = true;
+    console.warn(`Telephony permission is unavailable: ${objectName}. Run the TELEPHONY_AWS_FIX.md repair steps.`);
   }
 
   static hasPermissionIn(perms: EffectivePermission[], permissionName: string): boolean {
@@ -452,6 +492,7 @@ export class EffectivePermissionService {
 
   static async hasPermission(userId: string, permissionName: string): Promise<boolean> {
     if (normalizePermissionName(permissionName) === 'TELEPHONY_CALL') {
+      if (!(await this.isTelephonyPermissionConfigured())) return false;
       const user = await prisma.user.findUnique({ where: { id: userId }, select: { tenantId: true } });
       if (user) {
         const override = await prisma.telephonyAgentPermission.findUnique({

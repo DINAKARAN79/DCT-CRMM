@@ -93,7 +93,7 @@ function openDialpadTab(config: DialpadConfig, userId: string, tenantId: string)
 export function BizcallDialpadDock() {
   const pathname = usePathname();
   const { toast } = useToast();
-  const { user, tenant, isLoading, isAuthenticated, isAdmin, isSuperAdmin, hasEffectivePermission } = useAuth();
+  const { user, tenant, isLoading, isAuthenticated, isAdmin, isSuperAdmin, hasEffectivePermission, refresh } = useAuth();
   const showOnPage = !pathname.startsWith("/setup") || pathname === "/setup/integrations/telephony";
   const allowed = hasEffectivePermission("TELEPHONY_CALL");
   const impersonating = Boolean(user?.impersonatedBy || impersonationMeta());
@@ -123,6 +123,7 @@ export function BizcallDialpadDock() {
   const [blocked, setBlocked] = React.useState(false);
   const [iframeGeneration, setIframeGeneration] = React.useState(0);
   const frameRef = React.useRef<HTMLIFrameElement>(null);
+  const permissionRefreshRequestedRef = React.useRef(false);
   const onlineRef = React.useRef(false);
   const callInProgressRef = React.useRef(false);
   const closeAfterHangupRef = React.useRef(false);
@@ -269,7 +270,13 @@ export function BizcallDialpadDock() {
       try {
         const response = await clickToCallApi.clientConfig();
         if (!active) return;
-        const data = response.data.data as DialpadConfig & { reasonCode?: string };
+        const data = response.data.data as DialpadConfig & { reasonCode?: string; permissionGranted?: boolean };
+        if (data?.permissionGranted && !allowed && !permissionRefreshRequestedRef.current) {
+          permissionRefreshRequestedRef.current = true;
+          await refresh();
+        } else if (!data?.permissionGranted || allowed) {
+          permissionRefreshRequestedRef.current = false;
+        }
         if (data?.active && data.dialpadUrl && new URL(data.dialpadUrl).origin === data.dialpadOrigin) {
           setConfig(data);
             setReasonCode("ACTIVE");
@@ -291,12 +298,14 @@ export function BizcallDialpadDock() {
       }
     };
     void load();
-    const refresh = window.setInterval(() => void load(), 30_000);
+    const isLeadPage = pathname === "/leads" || pathname.startsWith("/leads/");
+    const refreshInterval = isLeadPage && (!allowed || reasonCode === "PERMISSION_UNAVAILABLE") ? 5_000 : 30_000;
+    const refreshTimer = window.setInterval(() => void load(), refreshInterval);
     return () => {
       active = false;
-      window.clearInterval(refresh);
+      window.clearInterval(refreshTimer);
     };
-  }, [isAuthenticated, isLoading]);
+  }, [allowed, isAuthenticated, isLoading, pathname, reasonCode, refresh]);
 
   React.useEffect(() => {
     if (!lockEnabled || !user?.id || !tenantId || !showOnPage || impersonating) {
