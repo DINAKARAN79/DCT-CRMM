@@ -1,5 +1,7 @@
 # Dependencies
 node_modules/
+.sf/
+.sfdx/
 .pnp
 .pnp.js
 
