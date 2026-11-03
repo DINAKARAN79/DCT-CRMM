@@ -495,29 +495,6 @@ export default function TelephonySettingsPage() {
             </p>
           ) : null}
 
-          <section className="space-y-3 rounded-xl border bg-card p-5 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="font-medium">Agents</h2>
-                <p className="text-sm text-muted-foreground">Users with TELEPHONY_CALL permission can place calls when company telephony is active.</p>
-              </div>
-              {isAdmin || isSuperAdmin ? <Button type="button" variant="outline" size="sm" disabled={grantingProfiles} onClick={() => void grantDefaultProfiles()}>{grantingProfiles ? "Granting…" : "Grant telephony to these profiles"}</Button> : null}
-            </div>
-            {agents.length ? (
-              <ul className="divide-y">
-                {agents.map((agent) => (
-                  <li key={agent.userId} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
-                    <span>{agent.userName} <span className="text-muted-foreground">({agent.profileName})</span></span>
-                    <span className="flex items-center gap-2">
-                      <span>{agent.canUseTelephony ? "Permission granted" : "No permission"}</span>
-                      {isAdmin || isSuperAdmin ? <Button type="button" variant="ghost" size="sm" onClick={() => void saveAgentAccess([agent.userId], !agent.canUseTelephony)}>{agent.canUseTelephony ? "Revoke" : "Grant"}</Button> : null}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : <p className="text-sm text-muted-foreground">No active agents found.</p>}
-          </section>
-
           <form
             className="space-y-5 rounded-xl border border-sky-100 bg-white p-5 shadow-sm"
             onSubmit={(event) => {
@@ -711,6 +688,29 @@ export default function TelephonySettingsPage() {
           </form>
 
           <PostMessageMonitor tenantId={tenant?.id || tenantId} userId={user?.id || ""} />
+
+          <section className="space-y-3 rounded-xl border bg-card p-5 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="font-medium">Agents</h2>
+                <p className="text-sm text-muted-foreground">Users with TELEPHONY_CALL permission can place calls when company telephony is active.</p>
+              </div>
+              {isAdmin || isSuperAdmin ? <Button type="button" variant="outline" size="sm" disabled={grantingProfiles} onClick={() => void grantDefaultProfiles()}>{grantingProfiles ? "Granting…" : "Grant telephony to these profiles"}</Button> : null}
+            </div>
+            {agents.length ? (
+              <ul className="divide-y">
+                {agents.map((agent) => (
+                  <li key={agent.userId} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
+                    <span>{agent.userName} <span className="text-muted-foreground">({agent.profileName})</span></span>
+                    <span className="flex items-center gap-2">
+                      <span>{agent.canUseTelephony ? "Permission granted" : "No permission"}</span>
+                      {isAdmin || isSuperAdmin ? <Button type="button" variant="ghost" size="sm" onClick={() => void saveAgentAccess([agent.userId], !agent.canUseTelephony)}>{agent.canUseTelephony ? "Revoke" : "Grant"}</Button> : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="text-sm text-muted-foreground">No active agents found.</p>}
+          </section>
 
         </>
       )}
