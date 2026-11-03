@@ -1,5 +1,8 @@
 # Dependencies
 node_modules/
+.turbo/
+.cache/
+backups/
 .sf/
 .sfdx/
 .pnp
@@ -12,6 +15,7 @@ apps/cp-portal/.next-cp-portal/
 apps/cp-portal/.next-cp-portal-dev/
 apps/portal/.next-cp-portal/
 apps/portal/.next-cp-portal-dev/
+apps/portal/.next-cp-portal*/
 out/
 dist/
 build/
