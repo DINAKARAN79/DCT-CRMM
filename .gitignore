@@ -10,6 +10,8 @@ node_modules/
 apps/web/.next-dev/
 apps/cp-portal/.next-cp-portal/
 apps/cp-portal/.next-cp-portal-dev/
+apps/portal/.next-cp-portal/
+apps/portal/.next-cp-portal-dev/
 out/
 dist/
 build/
